@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src 'self' file: data:; style-src 'self'; script-src 'self';">
+<title>Printshop</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>Printshop</h1>
+  <button id="openSettings" class="ghost">Settings</button>
+</header>
+
+<main>
+
+  <p id="codexWarning" class="banner" hidden></p>
+
+  <section class="card">
+    <div class="field">
+      <span class="labelrow">
+        Prompt
+        <span class="btns" id="codexTools" hidden>
+          <button id="revertPrompt" class="ghost small" hidden>Revert</button>
+          <button id="enhancePrompt" class="ghost small">Improve with Codex</button>
+        </span>
+      </span>
+      <textarea id="prompt" rows="4" placeholder="A minimalist poster of a red mountain at sunrise, flat vector, bold negative space"></textarea>
+      <output id="codexStatus" class="muted small"></output>
+    </div>
+
+    <div class="row">
+      <label class="field grow">
+        <span>Size</span>
+        <select id="preset"></select>
+      </label>
+      <label class="field check">
+        <input type="checkbox" id="landscape">
+        <span>Landscape</span>
+      </label>
+    </div>
+
+    <div class="row" id="customRow" hidden>
+      <label class="field"><span>Width</span><input type="number" id="customW" min="1" step="any" value="210"></label>
+      <label class="field"><span>Height</span><input type="number" id="customH" min="1" step="any" value="297"></label>
+      <label class="field"><span>Unit</span><select id="customUnit"></select></label>
+    </div>
+
+    <div class="row">
+      <label class="field"><span>DPI</span><input type="number" id="dpi" min="1" step="1" value="300"></label>
+      <p class="field grow readout"><span>Page</span><output id="pageReadout">—</output></p>
+    </div>
+
+    <div class="row">
+      <label class="field"><span>Variants</span>
+        <select id="count">
+          <option>1</option><option selected>2</option><option>3</option><option>4</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="row">
+      <fieldset class="field grow">
+        <span>Fit</span>
+        <label class="radio"><input type="radio" name="fit" value="fill" checked> Fill page</label>
+        <label class="radio"><input type="radio" name="fit" value="fit"> Fit with margin</label>
+      </fieldset>
+    </div>
+
+    <div class="actions">
+      <output id="estimate" class="muted">Estimated —</output>
+      <button id="generate" disabled>Generate</button>
+    </div>
+
+    <p id="genError" class="error" hidden></p>
+  </section>
+
+  <section class="card" id="progressCard" hidden>
+    <div class="labelrow">
+      <h2 id="progressTitle">Generating</h2>
+      <output id="progressStat" class="muted small"></output>
+    </div>
+    <div class="bar"><div class="bar-fill" id="progressFill"></div></div>
+    <pre id="progressLog" class="log"></pre>
+  </section>
+
+  <section class="card" id="resultsCard" hidden>
+    <h2>Pick one to export</h2>
+    <div id="grid" class="grid"></div>
+
+    <fieldset class="field">
+      <span>Format</span>
+      <label class="radio"><input type="radio" name="format" value="pdf" checked> PDF</label>
+      <label class="radio"><input type="radio" name="format" value="png"> PNG</label>
+      <label class="radio"><input type="radio" name="format" value="jpeg"> JPEG</label>
+      <label class="radio"><input type="radio" name="format" value="tiff"> TIFF</label>
+    </fieldset>
+
+    <fieldset class="field">
+      <span>Colour</span>
+      <label class="radio"><input type="radio" name="colour" value="rgb" checked> RGB</label>
+      <label class="radio"><input type="radio" name="colour" value="cmyk" id="colourCmyk"> CMYK</label>
+      <output id="colourNote" class="muted small"></output>
+    </fieldset>
+
+    <fieldset class="field">
+      <span>Watermark</span>
+      <label class="radio"><input type="radio" name="watermark" value="off" checked> Off</label>
+      <label class="radio"><input type="radio" name="watermark" value="on"> On</label>
+    </fieldset>
+    <label class="field" id="watermarkField" hidden>
+      <span>Watermark text</span>
+      <input type="text" id="watermarkText" placeholder="PROOF">
+    </label>
+
+    <div class="actions">
+      <output id="selectedLabel" class="muted">Nothing selected</output>
+      <button id="saveExport" disabled>Export</button>
+    </div>
+    <p id="pdfError" class="error" hidden></p>
+  </section>
+
+  <section class="card" id="savedCard" hidden>
+    <h2>Saved</h2>
+    <p id="savedPath" class="mono"></p>
+    <p id="savedNote" class="muted"></p>
+    <div class="actions">
+      <span></span>
+      <button id="openFolder" class="ghost">Open folder</button>
+    </div>
+  </section>
+
+</main>
+
+<div id="settingsPane" class="overlay" hidden>
+  <div class="card sheet">
+    <h2>Settings</h2>
+
+    <label class="field">
+      <span>Output folder</span>
+      <input type="text" id="outputDir" spellcheck="false">
+    </label>
+
+    <label class="field">
+      <span>CMYK profile (.icc)</span>
+      <input type="text" id="iccPath" spellcheck="false" placeholder="none — required for CMYK export">
+    </label>
+
+    <label class="field">
+      <span>Codex CLI path</span>
+      <input type="text" id="codexPath" spellcheck="false" placeholder="auto-detected">
+    </label>
+    <p class="muted small" id="codexState"></p>
+    <p class="muted small" id="codexLoginState"></p>
+    <div class="actions">
+      <span></span>
+      <span class="btns">
+        <button id="codexLogout" class="ghost small" hidden>Sign out</button>
+        <button id="codexLogin" class="ghost small">Sign in to Codex</button>
+      </span>
+    </div>
+
+    <div class="actions">
+      <output id="settingsMsg" class="muted"></output>
+      <span class="btns">
+        <button id="browseFolder" class="ghost">Folder…</button>
+        <button id="browseIcc" class="ghost">Profile…</button>
+        <button id="saveSettings">Save</button>
+      </span>
+    </div>
+
+    <p id="settingsError" class="error" hidden></p>
+    <div class="actions"><span></span><button id="closeSettings" class="ghost">Close</button></div>
+  </div>
+</div>
+
+<div id="lightbox" class="lightbox" hidden tabindex="-1">
+  <div class="lightbox-bar">
+    <output id="lightboxCaption"></output>
+    <span class="btns">
+      <button id="lightboxPrev" class="ghost small">‹ Prev</button>
+      <button id="lightboxNext" class="ghost small">Next ›</button>
+      <button id="lightboxClose" class="ghost small">Close ✕</button>
+    </span>
+  </div>
+  <img id="lightboxImg" alt="">
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
