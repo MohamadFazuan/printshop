@@ -11,9 +11,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            target: --mac
-            artifact: printshop-macos
+          # sharp ships a native binary per platform and cannot be cross-built,
+          # so each installer is produced on a runner of its own architecture.
+          - os: macos-latest # Apple Silicon
+            target: --mac --arm64
+            artifact: printshop-macos-arm64
+            glob: release/*.dmg
+          - os: macos-13 # Intel
+            target: --mac --x64
+            artifact: printshop-macos-intel
             glob: release/*.dmg
           - os: windows-latest
             target: --win

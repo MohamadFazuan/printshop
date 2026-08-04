@@ -147,11 +147,12 @@ npm run verify  # headless checks on the size/PDF logic — no key, no network
 Build installers locally:
 
 ```bash
-npm run dist:mac    # .dmg  — works on macOS
-npm run dist:win    # .exe  — do NOT run this on macOS, it will not produce a usable installer
+npm run dist:mac -- --arm64   # Apple Silicon .dmg
 ```
 
-The Windows installer is built by `.github/workflows/build.yml` on a `windows-latest` runner. Push a `v*` tag or trigger the workflow manually, then collect the artifacts.
+**Installers cannot be cross-built.** `sharp` carries a native binary per platform, so each installer has to be produced on a machine of that architecture — an Intel `.dmg` built on Apple Silicon ships arm64 binaries and crashes the moment a user exports. Do not force the missing binaries into `dependencies` either: that makes `npm ci` impossible on every platform at once.
+
+`.github/workflows/build.yml` therefore builds on three runners — `macos-latest` (Apple Silicon), `macos-13` (Intel) and `windows-latest` — each installing its own native binary. Push a `v*` tag or run the workflow manually, then collect the artifacts. `npm run verify` gates every build.
 
 Regenerate the app icon after editing `build/make-icon.js`:
 
