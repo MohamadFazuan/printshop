@@ -17,7 +17,7 @@ jobs:
             target: --mac --arm64
             artifact: printshop-macos-arm64
             glob: release/*.dmg
-          - os: macos-13 # Intel
+          - os: macos-15-intel # Intel; macos-13 was retired and never gets a runner
             target: --mac --x64
             artifact: printshop-macos-intel
             glob: release/*.dmg
