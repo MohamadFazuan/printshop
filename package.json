@@ -34,7 +34,6 @@
     ],
     "mac": {
       "category": "public.app-category.graphics-design",
-      "//": "No arch list here on purpose: it overrides the --arm64/--x64 CLI flag and silently emits a second dmg whose sharp binary is for the wrong architecture.",
       "target": [
         "dmg"
       ]

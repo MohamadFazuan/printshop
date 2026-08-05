@@ -13,6 +13,10 @@ jobs:
         include:
           # sharp ships a native binary per platform and cannot be cross-built,
           # so each installer is produced on a runner of its own architecture.
+          # The arch below is set by the CLI flag only — do NOT add an "arch"
+          # list to build.mac.target in package.json. It overrides this flag and
+          # silently emits a second dmg carrying the wrong architecture's sharp
+          # binary: it installs, launches, and dies at the first export.
           - os: macos-latest # Apple Silicon
             target: --mac --arm64
             artifact: printshop-macos-arm64
