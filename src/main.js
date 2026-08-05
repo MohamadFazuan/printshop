@@ -142,9 +142,31 @@ function describeCodexEvent (line) {
 // in this app and nothing is billed per image.
 // ---------------------------------------------------------------------------
 
+// npm's Windows install is a codex.cmd batch shim, and Node refuses to spawn
+// .cmd/.bat without a shell (CVE-2024-27980) — it throws EINVAL. So every
+// Windows path has to point at the real binary the shim would have launched.
+const WIN_ARCH = process.arch === 'arm64' ? 'arm64' : 'x64'
+const WIN_TRIPLE = process.arch === 'arm64'
+  ? 'aarch64-pc-windows-msvc'
+  : 'x86_64-pc-windows-msvc'
+
+function vendorExe (npmPrefix) {
+  return path.join(
+    npmPrefix, 'node_modules', '@openai', 'codex',
+    'node_modules', '@openai', `codex-win32-${WIN_ARCH}`,
+    'vendor', WIN_TRIPLE, 'bin', 'codex.exe'
+  )
+}
+
+function unshim (bin) {
+  if (process.platform !== 'win32' || !/\.(cmd|bat|ps1)$/i.test(bin)) return [bin]
+  return [vendorExe(path.dirname(bin)), bin]
+}
+
 const CODEX_CANDIDATES = process.platform === 'win32'
   ? [
-      path.join(process.env.APPDATA || '', 'npm', 'codex.cmd'),
+      vendorExe(path.join(process.env.APPDATA || '', 'npm')),
+      path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Links', 'codex.exe'),
       path.join(process.env.LOCALAPPDATA || '', 'Programs', 'codex', 'codex.exe')
     ]
   : [
@@ -154,14 +176,29 @@ const CODEX_CANDIDATES = process.platform === 'win32'
       '/usr/bin/codex'
     ]
 
-// A GUI app does not inherit the shell PATH, so `which codex` is useless here.
+// A macOS GUI app does not inherit the shell PATH, so `which codex` is useless
+// there. A Windows one does inherit the user PATH, which is where npm, nvm and
+// pnpm put their shims — so `where` is the only way to find a custom prefix.
+async function codexOnPath () {
+  if (process.platform !== 'win32') return []
+  try {
+    const { stdout } = await execFileAsync('where.exe', ['codex'], { timeout: 5000 })
+    return stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  } catch { return [] }
+}
+
 async function findCodex (override) {
-  for (const bin of [override, ...CODEX_CANDIDATES]) {
-    if (!bin) continue
-    try {
-      const { stdout } = await execFileAsync(bin, ['--version'], { timeout: 10000 })
-      return { bin, version: stdout.trim() }
-    } catch { /* next candidate */ }
+  const tried = new Set()
+  for (const raw of [override, ...(await codexOnPath()), ...CODEX_CANDIDATES]) {
+    if (!raw) continue
+    for (const bin of unshim(raw)) {
+      if (tried.has(bin)) continue
+      tried.add(bin)
+      try {
+        const { stdout } = await execFileAsync(bin, ['--version'], { timeout: 10000 })
+        return { bin, version: stdout.trim() }
+      } catch { /* next candidate */ }
+    }
   }
   return null
 }
