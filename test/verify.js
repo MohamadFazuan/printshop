@@ -9,7 +9,7 @@ const path = require('node:path')
 const { PDFDocument } = require('pdf-lib')
 
 const {
-  toPoints, sizeToPoints, renderSizeFor, aspectFor, pngSize, drawRect, buildPdf,
+  toPoints, sizeToPoints, renderSizeFor, aspectFor, aspectStrain, pngSize, drawRect, buildPdf,
   slugify, today, SIZE_PRESETS, dpiAdvice,
   watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE
 } = require('../src/core')
@@ -79,6 +79,50 @@ test('every preset resolves to a supported render size', () => {
     const { wPt, hPt } = sizeToPoints(preset)
     assert.ok(['1024x1024', '1024x1536', '1536x1024'].includes(renderSizeFor(wPt, hPt)), preset.id)
   }
+})
+
+// The picker opens a new optgroup every time `group` changes as it walks the
+// list, so a group split across the array shows the same heading twice. This is
+// the only thing keeping preset order honest as the catalogue grows.
+test('preset groups stay contiguous so the picker cannot repeat a heading', () => {
+  const seen = []
+  let previous = null
+  for (const preset of SIZE_PRESETS) {
+    if (preset.group === previous) continue
+    assert.ok(!seen.includes(preset.group), `${preset.group} appears in two separate runs`)
+    seen.push(preset.group)
+    previous = preset.group
+  }
+})
+
+test('preset ids are unique, or settings restore the wrong page', () => {
+  const ids = SIZE_PRESETS.map((p) => p.id)
+  assert.equal(new Set(ids).size, ids.length)
+})
+
+// --- Shape strain ----------------------------------------------------------
+// The model renders only 1:1, 2:3 and 3:2. A roll-up or a bumper sticker is far
+// longer than any of those, so artwork is lost to cropping — the operator has to
+// hear that before printing, not after.
+
+test('a piece far longer than any render shape is flagged', () => {
+  const strain = (id) => {
+    const preset = SIZE_PRESETS.find((p) => p.id === id)
+    const { wPt, hPt } = sizeToPoints(preset)
+    return aspectStrain(wPt, hPt)
+  }
+  assert.ok(strain('rollup85').severe, 'an 85 × 200 cm roll-up cannot be rendered at 2:3 without loss')
+  assert.ok(strain('bumper').severe, 'a 4:1 bumper sticker cannot be rendered at 3:2 without loss')
+  assert.ok(!strain('a4').severe, 'A4 is close enough to 2:3 to render honestly')
+  assert.ok(!strain('square').severe, 'a square page matches a square render exactly')
+})
+
+test('shape strain reports how much artwork is actually lost', () => {
+  const { wPt, hPt } = sizeToPoints(SIZE_PRESETS.find((p) => p.id === 'banner4x10'))
+  const { lossPct, stretch } = aspectStrain(wPt, hPt)
+  // 10:4 page against a 3:2 render — the page is 1.67× longer than the render.
+  near(stretch, 1.667, 0.01)
+  assert.equal(lossPct, 40)
 })
 
 // --- Resolution advice -----------------------------------------------------

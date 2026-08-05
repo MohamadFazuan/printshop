@@ -40,6 +40,17 @@ function renderSizeFor (wPt, hPt) {
   return '1024x1024'
 }
 
+// Mirrors aspectStrain() in core.js. A roll-up or a bumper sticker is far longer
+// than any shape the image model can render, so the operator has to be told what
+// fill will crop — or what fit will leave white — before they commit.
+function aspectStrain (wPt, hPt) {
+  const [pxW, pxH] = renderSizeFor(wPt, hPt).split('x').map(Number)
+  const page = wPt / hPt
+  const render = pxW / pxH
+  const stretch = Math.max(page / render, render / page)
+  return { stretch, lossPct: Math.round((1 - 1 / stretch) * 100), severe: stretch >= 1.3 }
+}
+
 function currentSize () {
   const dpi = Number($('dpi').value) || 300
   const landscape = $('landscape').checked
@@ -137,9 +148,20 @@ function refresh () {
     `${shown} ${size.unit} · ${Math.round(wPt)} × ${Math.round(hPt)} pt · ${dpi} DPI · ${verdict}`
   readout.className = advice.ok ? 'muted' : 'warn'
 
+  const strain = aspectStrain(wPt, hPt)
+  const shapeNote = $('shapeNote')
+  if (strain.severe) {
+    show(shapeNote, `This shape is much longer than the image model can render. About ${strain.lossPct}% of the artwork gets cropped on Fill, or the same amount of the page is left blank on Fit. Rebuild the type in your design software for a piece this long.`)
+    shapeNote.className = 'banner warn'
+  } else {
+    hide(shapeNote)
+  }
+
   const count = Number($('count').value)
+  // Each image is a separate round trip to OpenAI, so the wait scales with count.
+  const minutes = count <= 1 ? '2–5 minutes' : `${count * 2}–${count * 5} minutes`
   $('estimate').textContent =
-    `No per-image cost — runs on your ChatGPT plan · ${count} × ~${renderSize} · takes minutes`
+    `No per-image cost — runs on your ChatGPT plan · ${count} × ~${renderSize} · about ${minutes}`
 
   $('generate').disabled = !codexFound || !$('prompt').value.trim()
 }
@@ -287,6 +309,7 @@ function stopProgress (title) {
 api.onProgress((event) => {
   if (event.phase === 'start') {
     startProgress(event.total)
+    hide($('jobNote'))
     appendLog(`Codex CLI · ${event.total} × ${event.renderSize}`)
   } else if (event.phase === 'log') {
     appendLog(event.text)
@@ -294,12 +317,28 @@ api.onProgress((event) => {
     jobDone = event.done
     appendLog(`Image ${event.done} of ${event.total} written`)
     paintProgress()
+  } else if (event.phase === 'retry') {
+    // Silence here reads as a hang, and a retry is the most common reason the
+    // wait suddenly doubles.
+    appendLog(`Attempt ${event.attempt} of ${event.of} — asking again for ${event.missing} image${event.missing === 1 ? '' : 's'}`)
+    $('progressTitle').textContent = 'Retrying'
   } else if (event.phase === 'done') {
     jobDone = event.done
-    stopProgress('Done')
-    appendLog('Finished')
+    if (event.shortfall > 0) {
+      stopProgress(`Finished short — ${event.done} of ${event.total}`)
+      show($('jobNote'), event.note)
+      $('jobNote').className = 'banner warn'
+      $('retryRow').hidden = false
+      appendLog(`Kept ${event.done} of ${event.total}`)
+    } else {
+      stopProgress('Done')
+      appendLog('Finished')
+    }
   } else if (event.phase === 'failed') {
     stopProgress('Failed')
+    show($('jobNote'), event.text)
+    $('jobNote').className = 'banner warn'
+    $('retryRow').hidden = false
     appendLog(event.text)
   }
 })
@@ -314,6 +353,8 @@ async function generate () {
   button.disabled = true
   button.textContent = 'Generating… (minutes)'
   hide($('genError'))
+  hide($('jobNote'))
+  $('retryRow').hidden = true
   // Clear the previous job so nothing on screen belongs to an older run.
   $('resultsCard').hidden = true
   $('savedCard').hidden = true
@@ -507,6 +548,13 @@ $('revertPrompt').addEventListener('click', () => {
   $('revertPrompt').hidden = true
   $('codexStatus').textContent = ''
   refresh()
+})
+
+// Same brief, same size — a failed or short run is usually worth one more go,
+// and images already on disk are left alone.
+$('retryJob').addEventListener('click', () => {
+  $('retryRow').hidden = true
+  generate()
 })
 
 for (const group of ['format', 'colour', 'watermark']) {

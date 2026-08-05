@@ -69,6 +69,8 @@
       </fieldset>
     </div>
 
+    <p id="shapeNote" class="banner warn" hidden></p>
+
     <div class="actions">
       <output id="estimate" class="muted">Estimated —</output>
       <button id="generate" disabled>Generate</button>
@@ -83,6 +85,11 @@
       <output id="progressStat" class="muted small"></output>
     </div>
     <div class="bar"><div class="bar-fill" id="progressFill"></div></div>
+    <p id="jobNote" class="banner warn" hidden></p>
+    <div class="actions" id="retryRow" hidden>
+      <output class="muted small">Nothing is lost — images already saved stay in the job folder.</output>
+      <button id="retryJob" class="ghost small">Try again</button>
+    </div>
     <pre id="progressLog" class="log"></pre>
   </section>
 

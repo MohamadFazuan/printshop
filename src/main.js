@@ -14,6 +14,18 @@ const execFileAsync = promisify(execFile)
 // `codex exec` appends piped stdin to the prompt, so stdin must be closed or it
 // blocks forever waiting for EOF. execFile leaves it open; spawn with 'ignore'
 // does not.
+// Windows has no signals, so kill() reaches only the process we spawned. Codex
+// launches its own children, and orphaning them leaves the job folder locked
+// against the next attempt — which is what made a timeout poison every retry.
+function killTree (child) {
+  if (process.platform !== 'win32') {
+    child.kill('SIGKILL')
+    return
+  }
+  spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+    .on('error', () => { child.kill() })
+}
+
 function runDetached (bin, args, timeoutMs, onLine) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -21,8 +33,10 @@ function runDetached (bin, args, timeoutMs, onLine) {
     let stderr = ''
     let pending = ''
     const timer = setTimeout(() => {
-      child.kill('SIGKILL')
-      reject(new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s.`))
+      killTree(child)
+      const error = new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s.`)
+      error.timedOut = true
+      reject(error)
     }, timeoutMs)
 
     child.stdout.on('data', (chunk) => {
@@ -203,6 +217,40 @@ async function findCodex (override) {
   return null
 }
 
+// Codex writes for a developer reading a terminal. An operator needs to know
+// which of the few real causes they hit and what to do about it, so the raw
+// text is only ever the fallback — never the whole message.
+function explainFailure (raw, { saved = 0, wanted = 0, timedOut = false } = {}) {
+  const text = String(raw || '').toLowerCase()
+  const partly = saved > 0 ? ` ${saved} of ${wanted} image${saved === 1 ? '' : 's'} was kept.` : ''
+
+  if (timedOut) {
+    return `Codex ran past the 20 minute limit and was stopped.${partly} Generating fewer images at once is the reliable fix — each one is a separate round trip to OpenAI.`
+  }
+  if (/not logged in|logged out|unauthor|401|invalid.*(token|credential)/.test(text)) {
+    return 'Codex is signed out. Open Settings and use Sign in to Codex, then try again.'
+  }
+  if (/rate.?limit|429|quota|usage limit|too many requests/.test(text)) {
+    return `Your ChatGPT plan has hit its usage limit for now.${partly} This clears on its own — wait and retry, or generate fewer images per run.`
+  }
+  if (/policy|safety|refus|rejected|cannot (create|generate)|can.?t (create|generate)|not able to (create|generate)/.test(text)) {
+    return `OpenAI declined this prompt on content grounds.${partly} Reword the brief — naming real people, brands or logos is the usual cause.`
+  }
+  if (/sandbox|seatbelt|landlock|permission denied|eacces|eperm/.test(text)) {
+    return `Codex could not write into the job folder.${partly} Choose an output folder outside OneDrive and outside Program Files, then retry.`
+  }
+  if (/enotfound|etimedout|econnreset|econnrefused|network|proxy|tls|certificate/.test(text)) {
+    return `Could not reach OpenAI.${partly} Check the connection — a corporate proxy or VPN blocking api.openai.com will do this.`
+  }
+  if (/matplotlib|svg|pillow|python|drew|drawing code/.test(text)) {
+    return `Codex tried to draw the artwork with code instead of its image model.${partly} Retrying usually lands on the image model.`
+  }
+  if (!saved) {
+    return `Codex finished without saving any image.${partly || ' '}Retry once — if it repeats, the brief is likely being refused. ${clip(raw, 200)}`.trim()
+  }
+  return clip(raw, 240) || 'Codex failed without saying why.'
+}
+
 function enhanceInstruction (brief, size) {
   const orientation = size.landscape ? 'landscape' : 'portrait'
   const dimensions = size.landscape ? `${size.h} × ${size.w}` : `${size.w} × ${size.h}`
@@ -217,30 +265,39 @@ function enhanceInstruction (brief, size) {
   ].join('\n')
 }
 
-function generateInstruction (prompt, aspect, count) {
+// Named files rather than a count, because a retry must fill only the gaps —
+// asking again for "4 images" would overwrite the ones that already succeeded.
+function generateInstruction (prompt, aspect, names) {
+  const many = names.length > 1
   return [
-    `Generate ${count} DIFFERENT image${count > 1 ? 's' : ''} using your built-in image model.`,
+    `Generate ${names.length} DIFFERENT image${many ? 's' : ''} using your built-in image model.`,
     `Orientation: ${aspect.orientation}. Aspect ratio ${aspect.ratio}. Target ${aspect.pxW} × ${aspect.pxH} pixels, or the largest the model allows at that ratio.`,
     'Use the image model. Do NOT draw the image with code, matplotlib, SVG or any other library.',
-    `Save the result${count > 1 ? 's' : ''} in the current working directory as ${Array.from({ length: count }, (_, i) => `${String(i + 1).padStart(2, '0')}.png`).join(', ')}.`,
-    'Create no other files. Reply with only the word DONE.',
+    `Save the result${many ? 's' : ''} in the current working directory as ${names.join(', ')}.`,
+    'Overwrite nothing else in that folder. Create no other files. Reply with only the word DONE.',
     '',
     `Subject: ${prompt}`
   ].join('\n')
 }
 
+// One agent deviation — wrong filename, artwork drawn in code, a refusal on one
+// variant — used to lose the whole job. A second pass asks only for what is
+// still missing, so earlier successes survive.
+const GENERATE_ATTEMPTS = 2
+
 // Codex writes the images itself, inside the job folder, on the ChatGPT plan.
 async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
   const { wPt, hPt } = sizeToPoints(size)
   const aspect = aspectFor(wPt, hPt)
-  const outFile = path.join(os.tmpdir(), `printshop-codex-${crypto.randomBytes(4).toString('hex')}.txt`)
+  const wanted = Array.from({ length: count }, (_, i) => `${String(i + 1).padStart(2, '0')}.png`)
+  const pngs = async () => (await fs.readdir(jobDir).catch(() => []))
+    .filter((name) => name.toLowerCase().endsWith('.png'))
 
   // Files landing on disk is the only honest measure of how far along we are —
   // Codex's own chatter says nothing about how many images remain.
   let seen = 0
   const poll = setInterval(async () => {
-    const found = (await fs.readdir(jobDir).catch(() => []))
-      .filter((name) => name.toLowerCase().endsWith('.png')).length
+    const found = (await pngs()).length
     if (found !== seen) {
       seen = found
       emitProgress({ phase: 'image', done: found, total: count })
@@ -248,37 +305,61 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
   }, 1500)
 
   let lastMessage = ''
+  let timedOut = false
   try {
-    await runDetached(codexBin, [
-      'exec',
-      '--json',
-      '--skip-git-repo-check',
-      '--ephemeral',
-      '--sandbox', 'workspace-write',
-      '--color', 'never',
-      '-C', jobDir,
-      '-o', outFile,
-      generateInstruction(prompt, aspect, count)
-    ], 20 * 60 * 1000, (line) => {
-      const text = describeCodexEvent(line)
-      if (text) emitProgress({ phase: 'log', text })
-    })
-    lastMessage = (await fs.readFile(outFile, 'utf8').catch(() => '')).trim()
+    for (let attempt = 1; attempt <= GENERATE_ATTEMPTS; attempt++) {
+      const have = await pngs()
+      // Trust the count, not the names — an agent that saved four images under
+      // its own naming has still done the job.
+      if (have.length >= count) break
+      const missing = wanted.filter((name) => !have.includes(name)).slice(0, count - have.length)
+      if (!missing.length) break
+
+      if (attempt > 1) {
+        emitProgress({ phase: 'retry', attempt, of: GENERATE_ATTEMPTS, missing: missing.length })
+      }
+
+      // Each image is its own round trip to OpenAI, so the budget has to scale
+      // with how many are outstanding. A flat ceiling made one slow image sit
+      // for twenty minutes before saying anything.
+      const budgetMs = Math.min(25, 8 * missing.length) * 60 * 1000
+      const outFile = path.join(os.tmpdir(), `printshop-codex-${crypto.randomBytes(4).toString('hex')}.txt`)
+
+      try {
+        await runDetached(codexBin, [
+          'exec',
+          '--json',
+          '--skip-git-repo-check',
+          '--ephemeral',
+          '--sandbox', 'workspace-write',
+          '--color', 'never',
+          '-C', jobDir,
+          '-o', outFile,
+          generateInstruction(prompt, aspect, missing)
+        ], budgetMs, (line) => {
+          const text = describeCodexEvent(line)
+          if (text) emitProgress({ phase: 'log', text })
+        })
+        lastMessage = (await fs.readFile(outFile, 'utf8').catch(() => '')).trim()
+      } catch (error) {
+        // A failed attempt is not a failed job while a retry remains.
+        timedOut = Boolean(error.timedOut)
+        lastMessage = error.message
+      } finally {
+        fs.unlink(outFile).catch(() => {})
+      }
+    }
   } finally {
     clearInterval(poll)
-    fs.unlink(outFile).catch(() => {})
   }
 
   // Trust the folder, not the filenames it claims — an agent may deviate.
-  const files = (await fs.readdir(jobDir))
-    .filter((name) => name.toLowerCase().endsWith('.png'))
-    .sort()
-    .map((name) => path.join(jobDir, name))
+  const files = (await pngs()).sort().map((name) => path.join(jobDir, name))
 
   if (!files.length) {
-    throw new Error(lastMessage || 'Codex produced no images. Check that `codex login` is still valid.')
+    throw new Error(explainFailure(lastMessage, { saved: 0, wanted: count, timedOut }))
   }
-  return files
+  return { files, shortfall: count - files.length, reason: lastMessage, timedOut }
 }
 
 handle('codex:detect', async () => {
@@ -421,18 +502,34 @@ handle('image:generate', async ({ prompt, size, count }) => {
   emitProgress({ phase: 'start', total: n, renderSize })
 
   let files
+  let shortfall = 0
+  let reason = ''
+  let timedOut = false
   try {
     const found = await findCodex(config.codexPath)
     if (!found) throw new Error('Codex CLI not found. Install it, or set its path in Settings.')
-    files = await generateViaCodex({ prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin })
+    ;({ files, shortfall, reason, timedOut } = await generateViaCodex({
+      prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin
+    }))
   } catch (error) {
     emitProgress({ phase: 'failed', text: error.message })
-    // Don't leave an empty dated folder behind after a failed job.
-    await fs.rm(jobDir, { recursive: true, force: true }).catch(() => {})
+    // Keep whatever did land — a part-finished job is worth more than a tidy
+    // folder. Only clear up when there is genuinely nothing to keep.
+    const salvaged = (await fs.readdir(jobDir).catch(() => []))
+      .filter((name) => name.toLowerCase().endsWith('.png'))
+    if (!salvaged.length) await fs.rm(jobDir, { recursive: true, force: true }).catch(() => {})
     throw error
   }
 
-  emitProgress({ phase: 'done', done: files.length, total: n })
+  emitProgress({
+    phase: 'done',
+    done: files.length,
+    total: n,
+    // Say so when fewer arrived than were asked for, rather than presenting a
+    // short job as a complete one.
+    shortfall,
+    note: shortfall > 0 ? explainFailure(reason, { saved: files.length, wanted: n, timedOut }) : ''
+  })
 
   // Codex chooses its own dimensions, so read them rather than assume them.
   const dims = []
