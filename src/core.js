@@ -150,6 +150,50 @@ function aspectStrain (wPt, hPt) {
   }
 }
 
+const clip = (text, max = 140) => {
+  const flat = String(text).replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat
+}
+
+// Codex writes for a developer reading a terminal. An operator needs to know
+// which of the few real causes they hit and what to do about it, so the raw
+// text is only ever the fallback — never the whole message.
+//
+// `fatal` decides whether a second attempt is worth the operator's time. A
+// signed-out CLI, a refused prompt, a spent quota or a sandbox that will not
+// grant write all fail identically on the retry: the only thing retrying buys
+// is the same error twice as late. Those stop the run and report at once.
+function classifyFailure (raw, { saved = 0, wanted = 0, timedOut = false } = {}) {
+  const text = String(raw || '').toLowerCase()
+  const partly = saved > 0 ? ` ${saved} of ${wanted} image${saved === 1 ? '' : 's'} was kept.` : ''
+
+  if (timedOut) {
+    return { fatal: false, message: `Codex ran out of time and was stopped.${partly} Generating fewer images at once is the reliable fix — each one is a separate round trip to OpenAI.` }
+  }
+  if (/not logged in|logged out|unauthor|401|invalid.*(token|credential)/.test(text)) {
+    return { fatal: true, message: 'Codex is signed out. Open Settings and use Sign in to Codex, then try again.' }
+  }
+  if (/rate.?limit|429|quota|usage limit|too many requests/.test(text)) {
+    return { fatal: true, message: `Your ChatGPT plan has hit its usage limit for now.${partly} This clears on its own — wait, or generate fewer images per run.` }
+  }
+  if (/policy|safety|refus|rejected|cannot (create|generate)|can.?t (create|generate)|not able to (create|generate)/.test(text)) {
+    return { fatal: true, message: `OpenAI declined this prompt on content grounds.${partly} Reword the brief — naming real people, brands or logos is the usual cause.` }
+  }
+  if (/workspace is read-only|read-only workspace|sandbox|seatbelt|landlock|permission denied|eacces|eperm/.test(text)) {
+    return { fatal: true, message: `Codex's sandbox refused to write into the job folder.${partly} Pick an output folder under your own user folder — outside OneDrive, Program Files and any network drive — then try again.` }
+  }
+  if (/enotfound|etimedout|econnreset|econnrefused|network|proxy|tls|certificate/.test(text)) {
+    return { fatal: true, message: `Could not reach OpenAI.${partly} Check the connection — a corporate proxy or VPN blocking api.openai.com will do this.` }
+  }
+  if (/matplotlib|svg|pillow|python|drew|drawing code/.test(text)) {
+    return { fatal: false, message: `Codex tried to draw the artwork with code instead of its image model.${partly} Retrying usually lands on the image model.` }
+  }
+  if (!saved) {
+    return { fatal: false, message: `Codex finished without saving any image.${partly || ' '}${clip(raw, 200)}`.trim() }
+  }
+  return { fatal: false, message: clip(raw, 240) || 'Codex failed without saying why.' }
+}
+
 // Codex picks its own output dimensions, so the real DPI can only be known by
 // reading the file. IHDR is the first chunk, always at a fixed offset.
 function pngSize (buffer) {
@@ -290,6 +334,8 @@ module.exports = {
   renderSizeFor,
   aspectFor,
   aspectStrain,
+  clip,
+  classifyFailure,
   dpiAdvice,
   pngSize,
   sizeToPoints,

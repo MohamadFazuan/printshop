@@ -10,7 +10,7 @@ const { PDFDocument } = require('pdf-lib')
 
 const {
   toPoints, sizeToPoints, renderSizeFor, aspectFor, aspectStrain, pngSize, drawRect, buildPdf,
-  slugify, today, SIZE_PRESETS, dpiAdvice,
+  slugify, today, SIZE_PRESETS, dpiAdvice, classifyFailure,
   watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE
 } = require('../src/core')
 
@@ -115,6 +115,45 @@ test('a piece far longer than any render shape is flagged', () => {
   assert.ok(strain('bumper').severe, 'a 4:1 bumper sticker cannot be rendered at 3:2 without loss')
   assert.ok(!strain('a4').severe, 'A4 is close enough to 2:3 to render honestly')
   assert.ok(!strain('square').severe, 'a square page matches a square render exactly')
+})
+
+// --- Failure classification ------------------------------------------------
+// Generation runs for minutes, so a wrong verdict here is expensive: retrying a
+// cause that cannot change makes the operator wait twice as long for the same
+// message. This is the observed Windows failure — the sandbox refused the image
+// tool's save while shell writes in the same run succeeded.
+
+test('a sandbox refusal stops the run instead of retrying into the same wall', () => {
+  const verdict = classifyFailure('Unable to save: the workspace is read-only.')
+  assert.equal(verdict.fatal, true)
+  assert.match(verdict.message, /OneDrive/, 'the message has to name where to move the folder')
+})
+
+test('causes that cannot change on a second attempt are all fatal', () => {
+  for (const raw of [
+    'stream error: 401 unauthorized',
+    'You are not logged in. Run codex login.',
+    'rate limit exceeded, try again later',
+    'I cannot create that image — it violates the content policy',
+    'EACCES: permission denied, open /jobs/01.png',
+    'request to api.openai.com failed, reason: ENOTFOUND'
+  ]) {
+    assert.equal(classifyFailure(raw).fatal, true, raw)
+  }
+})
+
+test('a one-off slip is worth a second attempt', () => {
+  // Codex drawing with matplotlib instead of the image model is the classic
+  // deviation, and asking again usually lands on the image model.
+  assert.equal(classifyFailure('I drew the poster with matplotlib and saved it').fatal, false)
+  assert.equal(classifyFailure('').fatal, false, 'an unexplained failure has earned no verdict yet')
+  assert.equal(classifyFailure('killed', { timedOut: true }).fatal, false)
+})
+
+test('a partly finished job says what was kept', () => {
+  const { message } = classifyFailure('rate limit exceeded', { saved: 3, wanted: 4 })
+  assert.match(message, /3 of 4 images was kept/)
+  assert.doesNotMatch(classifyFailure('rate limit exceeded', { saved: 0, wanted: 4 }).message, /kept/)
 })
 
 test('shape strain reports how much artwork is actually lost', () => {

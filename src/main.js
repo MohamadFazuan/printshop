@@ -63,7 +63,7 @@ const {
   PT_PER_UNIT, UNITS, SIZE_PRESETS,
   EXPORT_FORMATS, COLOUR_SPACES, CMYK_CAPABLE,
   renderSizeFor, aspectFor, pngSize, sizeToPoints, buildPdf, slugify, today,
-  watermarkSvg, pixelCanvas
+  watermarkSvg, pixelCanvas, clip, classifyFailure
 } = require('./core')
 
 // ---------------------------------------------------------------------------
@@ -116,10 +116,6 @@ function emitProgress (payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('job:progress', payload)
 }
 
-const clip = (text, max = 140) => {
-  const flat = String(text).replace(/\s+/g, ' ').trim()
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat
-}
 
 // Codex JSONL → one human line. Unknown types still report something rather
 // than vanishing, so a change in Codex's schema degrades instead of going dark.
@@ -217,39 +213,7 @@ async function findCodex (override) {
   return null
 }
 
-// Codex writes for a developer reading a terminal. An operator needs to know
-// which of the few real causes they hit and what to do about it, so the raw
-// text is only ever the fallback — never the whole message.
-function explainFailure (raw, { saved = 0, wanted = 0, timedOut = false } = {}) {
-  const text = String(raw || '').toLowerCase()
-  const partly = saved > 0 ? ` ${saved} of ${wanted} image${saved === 1 ? '' : 's'} was kept.` : ''
-
-  if (timedOut) {
-    return `Codex ran past the 20 minute limit and was stopped.${partly} Generating fewer images at once is the reliable fix — each one is a separate round trip to OpenAI.`
-  }
-  if (/not logged in|logged out|unauthor|401|invalid.*(token|credential)/.test(text)) {
-    return 'Codex is signed out. Open Settings and use Sign in to Codex, then try again.'
-  }
-  if (/rate.?limit|429|quota|usage limit|too many requests/.test(text)) {
-    return `Your ChatGPT plan has hit its usage limit for now.${partly} This clears on its own — wait and retry, or generate fewer images per run.`
-  }
-  if (/policy|safety|refus|rejected|cannot (create|generate)|can.?t (create|generate)|not able to (create|generate)/.test(text)) {
-    return `OpenAI declined this prompt on content grounds.${partly} Reword the brief — naming real people, brands or logos is the usual cause.`
-  }
-  if (/workspace is read-only|read-only workspace|sandbox|seatbelt|landlock|permission denied|eacces|eperm/.test(text)) {
-    return `Codex's sandbox refused to write into the job folder.${partly} Pick an output folder under your own user folder — outside OneDrive, Program Files and any network drive — then retry.`
-  }
-  if (/enotfound|etimedout|econnreset|econnrefused|network|proxy|tls|certificate/.test(text)) {
-    return `Could not reach OpenAI.${partly} Check the connection — a corporate proxy or VPN blocking api.openai.com will do this.`
-  }
-  if (/matplotlib|svg|pillow|python|drew|drawing code/.test(text)) {
-    return `Codex tried to draw the artwork with code instead of its image model.${partly} Retrying usually lands on the image model.`
-  }
-  if (!saved) {
-    return `Codex finished without saving any image.${partly || ' '}Retry once — if it repeats, the brief is likely being refused. ${clip(raw, 200)}`.trim()
-  }
-  return clip(raw, 240) || 'Codex failed without saying why.'
-}
+const explainFailure = (raw, context) => classifyFailure(raw, context).message
 
 function enhanceInstruction (brief, size) {
   const orientation = size.landscape ? 'landscape' : 'portrait'
@@ -318,6 +282,7 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
   }, 1500)
 
   let lastMessage = ''
+  let fatalMessage = ''
   let timedOut = false
   try {
     for (let attempt = 1; attempt <= GENERATE_ATTEMPTS; attempt++) {
@@ -338,6 +303,12 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
       const budgetMs = Math.min(25, 8 * missing.length) * 60 * 1000
       const outFile = path.join(os.tmpdir(), `printshop-codex-${crypto.randomBytes(4).toString('hex')}.txt`)
 
+      // The real cause usually shows up mid-stream — "the workspace is
+      // read-only" is reported as Codex works, while the closing message is
+      // whatever the agent chose to say about it. Classifying on the final
+      // message alone would miss it and retry anyway.
+      let streamed = ''
+
       try {
         await runDetached(codexBin, [
           'exec',
@@ -352,7 +323,9 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
           generateInstruction(prompt, aspect, missing)
         ], budgetMs, (line) => {
           const text = describeCodexEvent(line)
-          if (text) emitProgress({ phase: 'log', text })
+          if (!text) return
+          emitProgress({ phase: 'log', text })
+          streamed = `${streamed}\n${text}`.slice(-4000)
         })
         lastMessage = (await fs.readFile(outFile, 'utf8').catch(() => '')).trim()
       } catch (error) {
@@ -361,6 +334,16 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
         lastMessage = error.message
       } finally {
         fs.unlink(outFile).catch(() => {})
+      }
+
+      // Report the moment the cause is known to be permanent, rather than
+      // making the operator sit through a second attempt for the same answer.
+      const saved = (await pngs()).length
+      if (saved >= count) break
+      const verdict = classifyFailure(`${lastMessage}\n${streamed}`, { saved, wanted: count, timedOut })
+      if (verdict.fatal) {
+        fatalMessage = verdict.message
+        break
       }
     }
   } finally {
@@ -371,9 +354,9 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
   const files = (await pngs()).sort().map((name) => path.join(jobDir, name))
 
   if (!files.length) {
-    throw new Error(explainFailure(lastMessage, { saved: 0, wanted: count, timedOut }))
+    throw new Error(fatalMessage || explainFailure(lastMessage, { saved: 0, wanted: count, timedOut }))
   }
-  return { files, shortfall: count - files.length, reason: lastMessage, timedOut }
+  return { files, shortfall: count - files.length, reason: fatalMessage || lastMessage, timedOut }
 }
 
 handle('codex:detect', async () => {
