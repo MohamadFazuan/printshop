@@ -236,8 +236,8 @@ function explainFailure (raw, { saved = 0, wanted = 0, timedOut = false } = {}) 
   if (/policy|safety|refus|rejected|cannot (create|generate)|can.?t (create|generate)|not able to (create|generate)/.test(text)) {
     return `OpenAI declined this prompt on content grounds.${partly} Reword the brief — naming real people, brands or logos is the usual cause.`
   }
-  if (/sandbox|seatbelt|landlock|permission denied|eacces|eperm/.test(text)) {
-    return `Codex could not write into the job folder.${partly} Choose an output folder outside OneDrive and outside Program Files, then retry.`
+  if (/workspace is read-only|read-only workspace|sandbox|seatbelt|landlock|permission denied|eacces|eperm/.test(text)) {
+    return `Codex's sandbox refused to write into the job folder.${partly} Pick an output folder under your own user folder — outside OneDrive, Program Files and any network drive — then retry.`
   }
   if (/enotfound|etimedout|econnreset|econnrefused|network|proxy|tls|certificate/.test(text)) {
     return `Could not reach OpenAI.${partly} Check the connection — a corporate proxy or VPN blocking api.openai.com will do this.`
@@ -284,6 +284,19 @@ function generateInstruction (prompt, aspect, names) {
 // variant — used to lose the whole job. A second pass asks only for what is
 // still missing, so earlier successes survive.
 const GENERATE_ATTEMPTS = 2
+
+// macOS grants the working directory write access implicitly under Seatbelt, so
+// -C alone was enough there. The Windows sandbox does not: its image tool
+// refuses with "the workspace is read-only" even though shell writes succeed.
+// Naming the job folder as a writable root fixes that without widening the
+// sandbox anywhere else. TOML literal strings are single-quoted and take no
+// escapes, which is what a C:\ path needs; a quote in the path forces the
+// escaped form instead.
+function tomlPath (value) {
+  return value.includes("'")
+    ? `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+    : `'${value}'`
+}
 
 // Codex writes the images itself, inside the job folder, on the ChatGPT plan.
 async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
@@ -332,6 +345,7 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
           '--skip-git-repo-check',
           '--ephemeral',
           '--sandbox', 'workspace-write',
+          '-c', `sandbox_workspace_write.writable_roots=[${tomlPath(jobDir)}]`,
           '--color', 'never',
           '-C', jobDir,
           '-o', outFile,
