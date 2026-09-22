@@ -116,38 +116,92 @@ function dpiAdvice (wPt, hPt, actualDpi) {
   }
 }
 
+// The image tool takes no width, height or aspect argument — the shape comes
+// out of the wording of the brief and the model picks the pixels. Measured on
+// codex-cli 0.153.4: a 10:1 brief came back 2170 × 217 (the shape asked for, at
+// 0.47 MP); a 5:1 brief came back 1983 × 793, which is 2.5:1 at 1.57 MP. So ask
+// for the page's own proportions instead of rounding every job to one of three
+// shapes. The budget below is the figure one of those two renders spent and the
+// other did not — a target for the brief, never a size the model is bound to.
+const RENDER_PIXELS = 1024 * 1536
+
 // Aspect-driven, so any unit and any custom size works without a lookup table.
 function renderSizeFor (wPt, hPt) {
   const ratio = wPt / hPt
-  if (ratio < 0.9) return '1024x1536'
-  if (ratio > 1.1) return '1536x1024'
-  return '1024x1024'
+  return `${Math.round(Math.sqrt(RENDER_PIXELS * ratio))}x${Math.round(Math.sqrt(RENDER_PIXELS / ratio))}`
+}
+
+// 3:2 reads better in a brief than 1.5:1, but only where the page really is a
+// tidy ratio — A4 is √2 and saying "2:3" about it was always a rounding.
+function ratioLabel (ratio) {
+  for (let d = 1; d <= 12; d++) {
+    const n = ratio * d
+    // Math.round(n) >= 1, or a page thinner than 1:50 rounds to "0:1".
+    if (Math.round(n) >= 1 && Math.abs(n - Math.round(n)) < 0.02) return `${Math.round(n)}:${d}`
+  }
+  return ratio >= 1 ? `${ratio.toFixed(2)}:1` : `1:${(1 / ratio).toFixed(2)}`
 }
 
 // What the render size means in words — Codex is told a ratio, not a pixel pair.
 function aspectFor (wPt, hPt) {
   const renderSize = renderSizeFor(wPt, hPt)
   const [pxW, pxH] = renderSize.split('x').map(Number)
-  if (pxW === pxH) return { renderSize, pxW, pxH, orientation: 'square', ratio: '1:1' }
-  return pxW < pxH
-    ? { renderSize, pxW, pxH, orientation: 'portrait', ratio: '2:3' }
-    : { renderSize, pxW, pxH, orientation: 'landscape', ratio: '3:2' }
+  const ratio = wPt / hPt
+  const orientation = Math.abs(ratio - 1) < 0.02 ? 'square' : ratio < 1 ? 'portrait' : 'landscape'
+  return { renderSize, pxW, pxH, orientation, ratio: ratioLabel(ratio) }
 }
 
-// The image model renders only 1:1, 2:3 and 3:2, so a long piece — a bumper
-// sticker, a roll-up, a banner — cannot be rendered at its own proportions.
-// `fill` then crops the render, `fit` leaves white on the page. Either way the
-// operator should be told before they generate, not after they print.
-function aspectStrain (wPt, hPt) {
-  const { pxW, pxH } = aspectFor(wPt, hPt)
+// Asking for the page's proportions is not the same as getting them: a 5:1
+// brief came back 2.5:1 in testing. Only the finished image settles it, so this
+// compares what landed against the page — `fill` crops the difference, `fit`
+// leaves that much of the page white. Measured after generating, never guessed
+// before it.
+function aspectStrain (wPt, hPt, imgW, imgH) {
+  // Without an image there is nothing to compare. Returning a verdict here
+  // would be a silent "all clear" — NaN >= 1.3 is false.
+  if (!(imgW > 0) || !(imgH > 0)) return null
   const page = wPt / hPt
-  const render = pxW / pxH
-  const stretch = Math.max(page / render, render / page)
+  const image = imgW / imgH
+  const stretch = Math.max(page / image, image / page)
   return {
     stretch,
     lossPct: Math.round((1 - 1 / stretch) * 100),
     severe: stretch >= 1.3
   }
+}
+
+// The whole brief Codex is given for one attempt. Pure, so test/verify.js can
+// hold it to its word without an Electron process.
+//
+// Named files rather than a count, because a retry must fill only the gaps —
+// asking again for "4 images" would overwrite the ones that already succeeded.
+function generateInstruction (prompt, aspect, names, hasReference = false) {
+  const many = names.length > 1
+  return [
+    `Generate ${names.length} DIFFERENT image${many ? 's' : ''} using your built-in image model.`,
+    `Orientation: ${aspect.orientation}. Aspect ratio ${aspect.ratio}. Target ${aspect.pxW} × ${aspect.pxH} pixels, or the largest the model allows at that ratio.`,
+    // Asked only for a shape, the model fills it by stretching what it drew:
+    // a 5:1 banner came back with an oval QR code and 2:1 letterforms. Measured
+    // — a 5:1 render with these two lines put a circle at 411 × 414 px and a
+    // square at 396 × 396.
+    'Geometry must be true: circles perfectly circular, squares perfectly square, faces and objects in natural proportion, and lettering at normal letter width.',
+    'Do NOT stretch, squash or distort anything to fill the frame. Compose across it instead — more elements, or more space between them.',
+    'Use the image model. Do NOT draw the image with code, matplotlib, SVG or any other library.',
+    // The attachment arrives through `codex exec -i`, so the agent sees it but
+    // has no copy on disk — and must not make one, because every .png in the
+    // job folder is counted as a finished variant.
+    ...(hasReference
+      ? [
+          'A reference image is attached to this message. Take subject, style, colour and composition from it.',
+          'The orientation and aspect ratio above still win, even where the reference disagrees.',
+          'Do not save, copy or reproduce the reference file itself into the folder.'
+        ]
+      : []),
+    `Save the result${many ? 's' : ''} in the current working directory as ${names.join(', ')}.`,
+    'Overwrite nothing else in that folder. Create no other files. Reply with only the word DONE.',
+    '',
+    `Subject: ${prompt}`
+  ].join('\n')
 }
 
 const clip = (text, max = 140) => {
@@ -334,8 +388,10 @@ module.exports = {
   renderSizeFor,
   aspectFor,
   aspectStrain,
+  ratioLabel,
   clip,
   classifyFailure,
+  generateInstruction,
   dpiAdvice,
   pngSize,
   sizeToPoints,

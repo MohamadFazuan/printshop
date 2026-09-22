@@ -7,8 +7,10 @@ let catalog = null
 let settings = null
 let lastJob = null
 let selectedFile = null
+let selectedIndex = 0
 let promptBeforeCodex = null
 let codexFound = null
+let reference = null
 
 // ---------------------------------------------------------------------------
 // Size maths — mirrors toPoints() / renderSizeFor() / dpiAdvice() in core.js.
@@ -33,21 +35,21 @@ function toPoints (value, unit, dpi) {
   return value * catalog.ptPerUnit[unit]
 }
 
+const RENDER_PIXELS = 1024 * 1536
+
 function renderSizeFor (wPt, hPt) {
   const ratio = wPt / hPt
-  if (ratio < 0.9) return '1024x1536'
-  if (ratio > 1.1) return '1536x1024'
-  return '1024x1024'
+  return `${Math.round(Math.sqrt(RENDER_PIXELS * ratio))}x${Math.round(Math.sqrt(RENDER_PIXELS / ratio))}`
 }
 
-// Mirrors aspectStrain() in core.js. A roll-up or a bumper sticker is far longer
-// than any shape the image model can render, so the operator has to be told what
-// fill will crop — or what fit will leave white — before they commit.
-function aspectStrain (wPt, hPt) {
-  const [pxW, pxH] = renderSizeFor(wPt, hPt).split('x').map(Number)
+// Mirrors aspectStrain() in core.js. The brief asks for the page's own shape,
+// but the model is free to ignore it — so this measures what actually landed
+// against the page, and only after the images are back.
+function aspectStrain (wPt, hPt, imgW, imgH) {
+  if (!(imgW > 0) || !(imgH > 0)) return null
   const page = wPt / hPt
-  const render = pxW / pxH
-  const stretch = Math.max(page / render, render / page)
+  const image = imgW / imgH
+  const stretch = Math.max(page / image, image / page)
   return { stretch, lossPct: Math.round((1 - 1 / stretch) * 100), severe: stretch >= 1.3 }
 }
 
@@ -123,6 +125,7 @@ function refresh () {
   const readout = $('pageReadout')
 
   if (!(size.w > 0) || !(size.h > 0)) {
+    hide($('shapeNote'))
     readout.textContent = 'Enter a width and height'
     readout.className = 'warn'
     $('estimate').textContent = 'Estimated —'
@@ -148,10 +151,15 @@ function refresh () {
     `${shown} ${size.unit} · ${Math.round(wPt)} × ${Math.round(hPt)} pt · ${dpi} DPI · ${verdict}`
   readout.className = advice.ok ? 'muted' : 'warn'
 
-  const strain = aspectStrain(wPt, hPt)
+  // The brief asks for the page's proportions; the model does not always
+  // oblige. Only the finished image settles it, so this appears after a job and
+  // is re-judged against the page currently selected.
   const shapeNote = $('shapeNote')
-  if (strain.severe) {
-    show(shapeNote, `This shape is much longer than the image model can render. About ${strain.lossPct}% of the artwork gets cropped on Fill, or the same amount of the page is left blank on Fit. Rebuild the type in your design software for a piece this long.`)
+  const landed = lastJob?.dims?.[selectedIndex]
+  const strain = landed ? aspectStrain(wPt, hPt, landed.width, landed.height) : null
+  if (strain?.severe) {
+    const which = lastJob.files.length > 1 ? `Variant ${selectedIndex + 1} came back` : 'Codex returned'
+    show(shapeNote, `${which} ${(landed.width / landed.height).toFixed(2)}:1 for a ${(wPt / hPt).toFixed(2)}:1 page. About ${strain.lossPct}% of the artwork is cropped on Fill, or the same amount of the page is left blank on Fit. Another run may land closer.`)
     shapeNote.className = 'banner warn'
   } else {
     hide(shapeNote)
@@ -310,7 +318,7 @@ api.onProgress((event) => {
   if (event.phase === 'start') {
     startProgress(event.total)
     hide($('jobNote'))
-    appendLog(`Codex CLI · ${event.total} × ${event.renderSize}`)
+    appendLog(`Codex CLI · ${event.total} × ${event.renderSize}${event.reference ? ` · reference: ${event.reference}` : ''}`)
   } else if (event.phase === 'log') {
     appendLog(event.text)
   } else if (event.phase === 'image') {
@@ -353,21 +361,26 @@ async function generate () {
   button.disabled = true
   button.textContent = 'Generating… (minutes)'
   hide($('genError'))
+  hide($('referenceError'))
   hide($('jobNote'))
   $('retryRow').hidden = true
   // Clear the previous job so nothing on screen belongs to an older run.
   $('resultsCard').hidden = true
   $('savedCard').hidden = true
+  lastJob = null
+  hide($('shapeNote'))
 
   try {
     const job = unwrap(await api.generate({
       prompt: $('prompt').value,
       size: currentSize(),
-      count: Number($('count').value)
+      count: Number($('count').value),
+      referencePath: reference?.path || null
     }), $('genError'))
 
     lastJob = job
     selectedFile = null
+    selectedIndex = 0
     renderGrid(job)
     $('resultsCard').hidden = false
     $('savedCard').hidden = true
@@ -375,6 +388,19 @@ async function generate () {
     button.textContent = original
     refresh()
   }
+}
+
+// The DPI shown before generating was a prediction; this is what actually landed.
+function measuredFor (job, index) {
+  const dim = job.dims?.[index]
+  if (!dim?.width) return ''
+  const { wPt, hPt } = pointsOf(currentSize())
+  const scale = fitMode() === 'fit'
+    ? Math.min(wPt / dim.width, hPt / dim.height)
+    : Math.max(wPt / dim.width, hPt / dim.height)
+  const dpi = Math.round(72 / scale)
+  const advice = dpiAdvice(wPt, hPt, dpi)
+  return ` · ${dim.width} × ${dim.height} px → ${dpi} DPI on this page${advice.ok ? '' : ` (below the ${advice.warn} DPI this size wants)`}`
 }
 
 function renderGrid (job) {
@@ -395,10 +421,13 @@ function renderGrid (job) {
 
     button.addEventListener('click', () => {
       selectedFile = file
+      selectedIndex = index
       for (const node of grid.querySelectorAll('.thumb')) node.classList.remove('selected')
       button.classList.add('selected')
-      $('selectedLabel').textContent = `Selected variant ${index + 1}`
+      $('selectedLabel').textContent = `Selected variant ${index + 1}${measuredFor(job, index)}`
       $('saveExport').disabled = false
+      // Variants differ in shape, so the warning belongs to the one picked.
+      refresh()
     })
     button.addEventListener('dblclick', () => openLightbox(index))
 
@@ -418,22 +447,8 @@ function renderGrid (job) {
     grid.append(wrap)
   })
 
-  // The DPI shown before generating was a prediction; this is what actually landed.
-  const dim = job.dims?.[0]
-  const measured = dim?.width
-    ? (() => {
-        const { wPt, hPt } = pointsOf(currentSize())
-        const scale = fitMode() === 'fit'
-          ? Math.min(wPt / dim.width, hPt / dim.height)
-          : Math.max(wPt / dim.width, hPt / dim.height)
-        const dpi = Math.round(72 / scale)
-        const advice = dpiAdvice(wPt, hPt, dpi)
-        return ` · ${dim.width} × ${dim.height} px → ${dpi} DPI on this page${advice.ok ? '' : ` (below the ${advice.warn} DPI this size wants)`}`
-      })()
-    : ''
-
   $('selectedLabel').textContent =
-    `${job.files.length} image${job.files.length > 1 ? 's' : ''} saved${measured} — click one`
+    `${job.files.length} image${job.files.length > 1 ? 's' : ''} saved${measuredFor(job, 0)} — click one`
   $('saveExport').disabled = true
 }
 
@@ -606,6 +621,44 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') closeLightbox()
   else if (event.key === 'ArrowLeft') stepLightbox(-1)
   else if (event.key === 'ArrowRight') stepLightbox(1)
+})
+
+// The reference outlives a job on purpose — the usual run is several goes at
+// the same source image with a different prompt each time.
+function renderReference () {
+  const row = $('referenceRow')
+  if (!reference) {
+    row.hidden = true
+    $('referenceThumb').removeAttribute('src')
+    $('pickReference').textContent = 'Attach…'
+    return
+  }
+  $('referenceThumb').src = reference.url
+  $('referenceName').textContent = reference.name
+  $('referenceMeta').textContent =
+    `${reference.width} × ${reference.height} px · ${(reference.bytes / 1024 / 1024).toFixed(1)} MB`
+  $('pickReference').textContent = 'Replace…'
+  row.hidden = false
+}
+
+$('pickReference').addEventListener('click', async () => {
+  hide($('referenceError'))
+  try {
+    const picked = unwrap(await api.pickReference(), $('referenceError'))
+    if (picked) reference = picked
+    renderReference()
+  } catch (error) {
+    // unwrap() renders a refusal from main itself. Anything else — an older
+    // window still running the previous preload, a dialog that threw — would
+    // otherwise leave the button looking dead.
+    if ($('referenceError').hidden) show($('referenceError'), error.message)
+  }
+})
+
+$('clearReference').addEventListener('click', () => {
+  reference = null
+  hide($('referenceError'))
+  renderReference()
 })
 
 $('generate').addEventListener('click', generate)

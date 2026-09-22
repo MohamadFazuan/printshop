@@ -211,3 +211,18 @@ button.small { padding: 4px 10px; font-size: 12px; }
   padding: 40px 24px;
 }
 .sheet { max-width: 520px; margin: 0 auto; background: #fff; }
+
+.reference {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.reference img {
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: #fff;
+}
+.reference span { flex: 1; min-width: 0; overflow-wrap: anywhere; }

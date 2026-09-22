@@ -31,6 +31,21 @@
       <output id="codexStatus" class="muted small"></output>
     </div>
 
+    <div class="field">
+      <span class="labelrow">
+        Reference image
+        <button id="pickReference" class="ghost small">Attach…</button>
+      </span>
+      <div id="referenceRow" class="reference" hidden>
+        <img id="referenceThumb" alt="Attached reference image">
+        <span id="referenceName" class="muted small"></span>
+        <span id="referenceMeta" class="muted small"></span>
+        <button id="clearReference" class="ghost small">Remove</button>
+      </div>
+      <output id="referenceHint" class="muted small">Optional — the artwork takes its subject, style and colour from it.</output>
+      <p id="referenceError" class="banner warn" hidden></p>
+    </div>
+
     <div class="row">
       <label class="field grow">
         <span>Size</span>

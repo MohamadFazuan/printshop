@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('printshop', {
   codexLogin: call('codex:login'),
   codexLogout: call('codex:logout'),
   enhancePrompt: call('codex:enhance'),
+  pickReference: call('image:pickReference'),
   generate: call('image:generate'),
   saveExport: call('export:save'),
   // One-way main → renderer stream; the renderer cannot send on this channel.

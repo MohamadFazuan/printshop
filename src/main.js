@@ -63,7 +63,7 @@ const {
   PT_PER_UNIT, UNITS, SIZE_PRESETS,
   EXPORT_FORMATS, COLOUR_SPACES, CMYK_CAPABLE,
   renderSizeFor, aspectFor, pngSize, sizeToPoints, buildPdf, slugify, today,
-  watermarkSvg, pixelCanvas, clip, classifyFailure
+  watermarkSvg, pixelCanvas, clip, classifyFailure, generateInstruction
 } = require('./core')
 
 // ---------------------------------------------------------------------------
@@ -229,21 +229,6 @@ function enhanceInstruction (brief, size) {
   ].join('\n')
 }
 
-// Named files rather than a count, because a retry must fill only the gaps —
-// asking again for "4 images" would overwrite the ones that already succeeded.
-function generateInstruction (prompt, aspect, names) {
-  const many = names.length > 1
-  return [
-    `Generate ${names.length} DIFFERENT image${many ? 's' : ''} using your built-in image model.`,
-    `Orientation: ${aspect.orientation}. Aspect ratio ${aspect.ratio}. Target ${aspect.pxW} × ${aspect.pxH} pixels, or the largest the model allows at that ratio.`,
-    'Use the image model. Do NOT draw the image with code, matplotlib, SVG or any other library.',
-    `Save the result${many ? 's' : ''} in the current working directory as ${names.join(', ')}.`,
-    'Overwrite nothing else in that folder. Create no other files. Reply with only the word DONE.',
-    '',
-    `Subject: ${prompt}`
-  ].join('\n')
-}
-
 // One agent deviation — wrong filename, artwork drawn in code, a refusal on one
 // variant — used to lose the whole job. A second pass asks only for what is
 // still missing, so earlier successes survive.
@@ -263,7 +248,7 @@ function tomlPath (value) {
 }
 
 // Codex writes the images itself, inside the job folder, on the ChatGPT plan.
-async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
+async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, referencePath }) {
   const { wPt, hPt } = sizeToPoints(size)
   const aspect = aspectFor(wPt, hPt)
   const wanted = Array.from({ length: count }, (_, i) => `${String(i + 1).padStart(2, '0')}.png`)
@@ -317,10 +302,16 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin }) {
           '--ephemeral',
           '--sandbox', 'workspace-write',
           '-c', `sandbox_workspace_write.writable_roots=[${tomlPath(jobDir)}]`,
+          // Codex reads the reference itself and attaches it to the prompt, so
+          // it never enters the sandbox and never lands in the job folder.
+          // `--image` takes a list, so it has to be followed by another flag or
+          // it swallows the prompt — hence the `--` before the instruction.
+          ...(referencePath ? ['-i', referencePath] : []),
           '--color', 'never',
           '-C', jobDir,
           '-o', outFile,
-          generateInstruction(prompt, aspect, missing)
+          '--',
+          generateInstruction(prompt, aspect, missing, Boolean(referencePath))
         ], budgetMs, (line) => {
           const text = describeCodexEvent(line)
           if (!text) return
@@ -484,8 +475,57 @@ handle('settings:pickIcc', async () => {
   return chosen
 })
 
-handle('image:generate', async ({ prompt, size, count }) => {
+const REFERENCE_TYPES = ['png', 'jpg', 'jpeg', 'webp']
+
+handle('image:pickReference', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Reference image', extensions: REFERENCE_TYPES }]
+  })
+  if (result.canceled) return null
+  const chosen = result.filePaths[0]
+  const { width, height, bytes } = await assertReadable(chosen)
+  return {
+    path: chosen,
+    url: pathToFileURL(chosen).href,
+    name: path.basename(chosen),
+    width,
+    height,
+    bytes
+  }
+})
+
+// The file can go missing between picking it and pressing Generate, and Codex
+// reports a bad --image as its own opaque failure minutes in. Check it here.
+async function assertReadable (file) {
+  const ext = path.extname(file).slice(1).toLowerCase()
+  if (!REFERENCE_TYPES.includes(ext)) {
+    throw new Error(`A reference has to be a ${REFERENCE_TYPES.join(', ')} image.`)
+  }
+  let stat
+  try {
+    stat = await fs.stat(file)
+  } catch {
+    throw new Error(`That reference image is no longer at ${file}.`)
+  }
+  if (!stat.isFile() || stat.size === 0) throw new Error('That reference image is empty.')
+  // Codex uploads the file as-is; a huge one buys nothing and can stall the job.
+  if (stat.size > 20 * 1024 * 1024) {
+    throw new Error(`That reference image is ${(stat.size / 1024 / 1024).toFixed(0)} MB. Use one under 20 MB.`)
+  }
+  // A .png extension proves nothing — a renamed HEIC out of Photos is the usual
+  // one. Decode it now rather than letting Codex fail on it minutes into a job.
+  try {
+    const meta = await sharp(file).metadata()
+    return { width: meta.width, height: meta.height, bytes: stat.size }
+  } catch (error) {
+    throw new Error(`That file could not be read as an image: ${error.message}`)
+  }
+}
+
+handle('image:generate', async ({ prompt, size, count, referencePath }) => {
   if (!prompt || !prompt.trim()) throw new Error('Prompt is empty.')
+  if (referencePath) await assertReadable(referencePath)
   const config = await readConfig()
   const outputDir = config.outputDir || defaultOutputDir()
 
@@ -496,7 +536,7 @@ handle('image:generate', async ({ prompt, size, count }) => {
   const jobDir = path.join(outputDir, today(), `${slugify(prompt)}-${crypto.randomBytes(2).toString('hex')}`)
   await fs.mkdir(jobDir, { recursive: true })
 
-  emitProgress({ phase: 'start', total: n, renderSize })
+  emitProgress({ phase: 'start', total: n, renderSize, reference: referencePath ? path.basename(referencePath) : null })
 
   let files
   let shortfall = 0
@@ -506,7 +546,7 @@ handle('image:generate', async ({ prompt, size, count }) => {
     const found = await findCodex(config.codexPath)
     if (!found) throw new Error('Codex CLI not found. Install it, or set its path in Settings.')
     ;({ files, shortfall, reason, timedOut } = await generateViaCodex({
-      prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin
+      prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin, referencePath
     }))
   } catch (error) {
     emitProgress({ phase: 'failed', text: error.message })

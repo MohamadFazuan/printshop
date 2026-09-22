@@ -9,8 +9,8 @@ const path = require('node:path')
 const { PDFDocument } = require('pdf-lib')
 
 const {
-  toPoints, sizeToPoints, renderSizeFor, aspectFor, aspectStrain, pngSize, drawRect, buildPdf,
-  slugify, today, SIZE_PRESETS, dpiAdvice, classifyFailure,
+  toPoints, sizeToPoints, renderSizeFor, aspectFor, aspectStrain, ratioLabel, pngSize, drawRect, buildPdf,
+  slugify, today, SIZE_PRESETS, dpiAdvice, classifyFailure, generateInstruction,
   watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE
 } = require('../src/core')
 
@@ -63,22 +63,54 @@ test('a zero or negative size is refused before it reaches the API', () => {
 // --- Render size -----------------------------------------------------------
 // Aspect-driven so custom sizes work without anyone maintaining a lookup table.
 
-test('render size follows the page aspect, whatever the unit', () => {
-  const pick = (size) => {
+// The image tool has no size argument, so the brief asks for the page's own
+// proportions. Rounding every job to one of three shapes is what used to tell a
+// 10 × 2 ft banner operator the piece could not be rendered at all.
+test('the render size carries the page aspect, whatever the unit', () => {
+  const ratioOf = (size) => {
     const { wPt, hPt } = sizeToPoints(size)
-    return renderSizeFor(wPt, hPt)
+    const [w, h] = renderSizeFor(wPt, hPt).split('x').map(Number)
+    return { asked: w / h, page: wPt / hPt }
   }
-  assert.equal(pick({ w: 210, h: 297, unit: 'mm' }), '1024x1536')
-  assert.equal(pick({ w: 8.5, h: 11, unit: 'in', landscape: true }), '1536x1024')
-  assert.equal(pick({ w: 210, h: 210, unit: 'mm' }), '1024x1024')
-  assert.equal(pick({ w: 1200, h: 1800, unit: 'px', dpi: 300 }), '1024x1536')
+  for (const size of [
+    { w: 210, h: 297, unit: 'mm' },
+    { w: 8.5, h: 11, unit: 'in', landscape: true },
+    { w: 210, h: 210, unit: 'mm' },
+    { w: 1200, h: 1800, unit: 'px', dpi: 300 },
+    { w: 10, h: 2, unit: 'ft' }
+  ]) {
+    const { asked, page } = ratioOf(size)
+    near(asked, page, page * 0.01)
+  }
 })
 
-test('every preset resolves to a supported render size', () => {
+test('every preset asks for its own shape, including the long ones', () => {
   for (const preset of SIZE_PRESETS) {
     const { wPt, hPt } = sizeToPoints(preset)
-    assert.ok(['1024x1024', '1024x1536', '1536x1024'].includes(renderSizeFor(wPt, hPt)), preset.id)
+    const [w, h] = renderSizeFor(wPt, hPt).split('x').map(Number)
+    assert.ok(w > 0 && h > 0, preset.id)
+    near(w / h, wPt / hPt, (wPt / hPt) * 0.01)
   }
+})
+
+test('a ratio reads as whole numbers where the page really is one', () => {
+  assert.equal(ratioLabel(5), '5:1')
+  assert.equal(ratioLabel(4), '4:1')
+  assert.equal(ratioLabel(1.5), '3:2')
+  assert.equal(ratioLabel(1), '1:1')
+  // A4 is √2, and calling that "2:3" was a rounding the brief passed on to Codex.
+  assert.equal(ratioLabel(210 / 297), '1:1.41')
+})
+
+test('a very thin page never reads as "0:1" in the brief', () => {
+  // Rounding a ratio under 1:50 to a whole numerator gives 0, and "Aspect
+  // ratio 0:1" is the one label Codex cannot act on.
+  for (const ratio of [1 / 60, 1 / 200, 0.0199, 0.001]) {
+    const label = ratioLabel(ratio)
+    assert.ok(!label.startsWith('0:'), `${ratio} produced ${label}`)
+    assert.match(label, /^1:\d/)
+  }
+  assert.equal(ratioLabel(1 / 60), '1:60.00')
 })
 
 // The picker opens a new optgroup every time `group` changes as it walks the
@@ -101,20 +133,80 @@ test('preset ids are unique, or settings restore the wrong page', () => {
 })
 
 // --- Shape strain ----------------------------------------------------------
-// The model renders only 1:1, 2:3 and 3:2. A roll-up or a bumper sticker is far
-// longer than any of those, so artwork is lost to cropping — the operator has to
-// hear that before printing, not after.
+// Asking for the page's shape is not the same as getting it — a 5:1 brief came
+// back 2.5:1 in testing. So strain is measured against the image that actually
+// landed, and says what fill will crop or fit will leave white. Judging it from
+// the page alone is what produced a warning for shapes the model renders fine.
 
-test('a piece far longer than any render shape is flagged', () => {
-  const strain = (id) => {
-    const preset = SIZE_PRESETS.find((p) => p.id === id)
-    const { wPt, hPt } = sizeToPoints(preset)
-    return aspectStrain(wPt, hPt)
+test('an image that matches the page costs nothing', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 10, h: 2, unit: 'ft' })
+  assert.ok(!aspectStrain(wPt, hPt, 2804, 561).severe, 'a 5:1 image on a 5:1 page is exact')
+})
+
+test('an image the model shaped differently is flagged with what it costs', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 10, h: 2, unit: 'ft' })
+  // The measured miss: a 5:1 brief came back 1983 × 793.
+  const strain = aspectStrain(wPt, hPt, 1983, 793)
+  assert.equal(strain.severe, true)
+  assert.equal(strain.lossPct, 50, 'half a 5:1 page is lost to a 2.5:1 image')
+})
+
+test('strain refuses to judge without an image rather than clearing it', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 10, h: 2, unit: 'ft' })
+  // The trap: NaN >= 1.3 is false, so a caller that forgot the image used to
+  // get a confident "nothing wrong here" on a page the model may have missed.
+  assert.equal(aspectStrain(wPt, hPt), null)
+  assert.equal(aspectStrain(wPt, hPt, 0, 0), null)
+  assert.equal(aspectStrain(wPt, hPt, 2804, undefined), null)
+})
+
+test('a small difference is not worth a banner', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 210, h: 297, unit: 'mm' })
+  assert.ok(!aspectStrain(wPt, hPt, 1055, 1491).severe, 'the shape that was asked for')
+  assert.ok(!aspectStrain(wPt, hPt, 1024, 1536).severe, 'close enough not to nag')
+})
+
+// --- The brief Codex is given ----------------------------------------------
+// The instruction is the whole contract with the agent. Every line here exists
+// because its absence cost a job: artwork drawn in matplotlib, a stray file in
+// the folder counted as a variant, a reference image copied in beside the real
+// output.
+
+const A4 = aspectFor(595.28, 841.89)
+
+test('without a reference the brief says nothing about one', () => {
+  const brief = generateInstruction('a red mountain', A4, ['01.png', '02.png'])
+  assert.match(brief, /Generate 2 DIFFERENT images/)
+  assert.match(brief, /Subject: a red mountain/)
+  assert.ok(!/reference/i.test(brief), 'a reference must not be implied when none was attached')
+})
+
+test('an attached reference is described, bounded, and kept out of the folder', () => {
+  const brief = generateInstruction('a red mountain', A4, ['01.png'], true)
+  assert.match(brief, /reference image is attached/i)
+  // Without this the agent follows the reference's shape and the page crops.
+  assert.match(brief, /aspect ratio above still win/i)
+  // Every .png in the job folder is counted as a finished variant, so a copied
+  // reference would be handed back to the operator as generated artwork.
+  assert.match(brief, /Do not save, copy or reproduce the reference/i)
+})
+
+test('the brief forbids distorting content to fill the frame', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 10, h: 2, unit: 'ft' })
+  const brief = generateInstruction('a menu banner', aspectFor(wPt, hPt), ['01.png'])
+  // Told only the shape, the model stretched a 5:1 banner to fit: the QR code
+  // came back 136 × 61 px — an oval — and the type twice its natural width.
+  // These two lines are what made a measured circle land at 411 × 414.
+  assert.match(brief, /circles perfectly circular/i)
+  assert.match(brief, /Do NOT stretch, squash or distort/i)
+  // Every page gets them; distortion is never wanted on something being printed.
+  assert.match(generateInstruction('x', aspectFor(595.28, 841.89), ['01.png']), /circles perfectly circular/i)
+})
+
+test('the aspect ratio is stated whether or not a reference is attached', () => {
+  for (const withRef of [false, true]) {
+    assert.match(generateInstruction('x', A4, ['01.png'], withRef), /Aspect ratio 1:1\.41/)
   }
-  assert.ok(strain('rollup85').severe, 'an 85 × 200 cm roll-up cannot be rendered at 2:3 without loss')
-  assert.ok(strain('bumper').severe, 'a 4:1 bumper sticker cannot be rendered at 3:2 without loss')
-  assert.ok(!strain('a4').severe, 'A4 is close enough to 2:3 to render honestly')
-  assert.ok(!strain('square').severe, 'a square page matches a square render exactly')
 })
 
 // --- Failure classification ------------------------------------------------
@@ -158,8 +250,9 @@ test('a partly finished job says what was kept', () => {
 
 test('shape strain reports how much artwork is actually lost', () => {
   const { wPt, hPt } = sizeToPoints(SIZE_PRESETS.find((p) => p.id === 'banner4x10'))
-  const { lossPct, stretch } = aspectStrain(wPt, hPt)
-  // 10:4 page against a 3:2 render — the page is 1.67× longer than the render.
+  // A 4 × 10 ft page is 2.5:1 and the brief asks for that. If Codex answers 3:2
+  // anyway, the page is 1.67× longer than the image it has to be filled with.
+  const { lossPct, stretch } = aspectStrain(wPt, hPt, 1536, 1024)
   near(stretch, 1.667, 0.01)
   assert.equal(lossPct, 40)
 })
@@ -217,8 +310,15 @@ test('the aspect handed to Codex agrees with the page it will be printed on', ()
   }
   const a4 = describe({ w: 210, h: 297, unit: 'mm' })
   assert.equal(a4.orientation, 'portrait')
-  assert.equal(a4.ratio, '2:3')
+  assert.equal(a4.ratio, '1:1.41', 'A4 is √2 — calling it 2:3 asked Codex for a shape the page is not')
   assert.ok(a4.pxW < a4.pxH, 'portrait must not hand over landscape pixels')
+
+  // The case that started this: a 10 × 2 ft banner is a shape the model will
+  // compose for, so the brief has to name it rather than round it to 3:2.
+  const banner = describe({ w: 10, h: 2, unit: 'ft' })
+  assert.equal(banner.orientation, 'landscape')
+  assert.equal(banner.ratio, '5:1')
+  near(banner.pxW / banner.pxH, 5, 0.05)
 
   const wide = describe({ w: 11, h: 8.5, unit: 'in' })
   assert.equal(wide.orientation, 'landscape')
