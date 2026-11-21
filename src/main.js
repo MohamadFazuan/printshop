@@ -242,6 +242,13 @@ async function findCodex (override) {
   return null
 }
 
+// The operator's own ~/.codex/config.toml — plugins, notify hooks, a model
+// picked for coding — otherwise rides along on every job. Measured: a personal
+// plugin added ~230 events of file reads before the image was even attempted,
+// and a different config on another machine would give a different result.
+// Login lives outside config.toml, so auth is unaffected.
+const ISOLATE_CODEX = ['--ignore-user-config']
+
 const explainFailure = (raw, context) => classifyFailure(raw, context).message
 
 function enhanceInstruction (brief, size) {
@@ -329,6 +336,7 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
           '--json',
           '--skip-git-repo-check',
           '--ephemeral',
+          ...ISOLATE_CODEX,
           '--sandbox', 'workspace-write',
           '-c', `sandbox_workspace_write.writable_roots=[${tomlPath(jobDir)}]`,
           // Codex reads the references itself and attaches them to the prompt,
@@ -439,6 +447,7 @@ handle('codex:enhance', async ({ brief, size }) => {
       'exec',
       '--skip-git-repo-check',
       '--ephemeral',
+      ...ISOLATE_CODEX,
       '--sandbox', 'read-only',
       '--color', 'never',
       '-o', outFile,
