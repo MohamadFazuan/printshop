@@ -370,6 +370,8 @@ async function generate () {
   $('savedCard').hidden = true
   lastJob = null
   hide($('shapeNote'))
+  $('outputPane').scrollTo({ top: 0 })
+  $('progressCard').querySelector('details').open = true
 
   try {
     const job = unwrap(await api.generate({
@@ -384,6 +386,10 @@ async function generate () {
     selectedIndex = 0
     renderGrid(job)
     $('resultsCard').hidden = false
+    // The log has done its job once images exist; fold it so they sit higher.
+    // A short or failed job keeps it open — that is when the log is read.
+    if (!job.shortfall) $('progressCard').querySelector('details').open = false
+    $('resultsCard').scrollIntoView({ behavior: 'smooth', block: 'start' })
     $('savedCard').hidden = true
   } catch { /* message already rendered */ } finally {
     button.textContent = original
@@ -648,30 +654,27 @@ document.addEventListener('keydown', (event) => {
 function renderReferences () {
   const list = $('referenceList')
   list.replaceChildren(...references.map((ref, index) => {
-    const item = document.createElement('li')
-    item.className = 'reference'
-    const thumb = document.createElement('img')
-    thumb.src = ref.url
-    thumb.alt = `Reference ${index + 1}: ${ref.name}`
-    const name = document.createElement('span')
-    name.className = 'muted small'
-    name.textContent = ref.name
-    const meta = document.createElement('span')
-    meta.className = 'muted small'
     const size = ref.bytes >= 1024 * 1024
       ? `${(ref.bytes / 1024 / 1024).toFixed(1)} MB`
       : `${Math.max(1, Math.round(ref.bytes / 1024))} KB`
-    meta.textContent = `${ref.width} × ${ref.height} px · ${size}`
+    const item = document.createElement('li')
+    item.className = 'reference'
+    // Name and size ride on the tooltip — the pane is too narrow for a row each.
+    item.title = `${ref.name}\n${ref.width} × ${ref.height} px · ${size}`
+    const thumb = document.createElement('img')
+    thumb.src = ref.url
+    thumb.alt = `Reference ${index + 1}: ${ref.name}`
     const remove = document.createElement('button')
-    remove.className = 'ghost small'
-    remove.textContent = 'Remove'
+    remove.className = 'remove'
+    remove.type = 'button'
+    remove.textContent = '✕'
     remove.setAttribute('aria-label', `Remove ${ref.name}`)
     remove.addEventListener('click', () => {
       references.splice(index, 1)
       hide($('referenceError'))
       renderReferences()
     })
-    item.append(thumb, name, meta, remove)
+    item.append(thumb, remove)
     return item
   }))
   list.hidden = references.length === 0

@@ -16,6 +16,8 @@
 
 <main>
 
+  <div class="pane compose">
+
   <p id="codexWarning" class="banner" hidden></p>
 
   <section class="card" id="composeCard">
@@ -37,7 +39,7 @@
         <button id="pickReference" class="ghost small">Attach…</button>
       </span>
       <ul id="referenceList" class="references" hidden></ul>
-      <output id="referenceHint" class="muted small">Optional, up to 4 — drop, paste (⌘V) or attach. The artwork takes its subject, style and colour from them.</output>
+      <output id="referenceHint" class="muted small">Optional, up to 4. Drop, paste (⌘V) or attach — the artwork takes subject, style and colour from them.</output>
       <p id="referenceError" class="banner warn" hidden></p>
     </div>
 
@@ -59,25 +61,22 @@
     </div>
 
     <div class="row">
-      <label class="field"><span>DPI</span><input type="number" id="dpi" min="1" step="1" value="300"></label>
-      <p class="field grow readout"><span>Page</span><output id="pageReadout">—</output></p>
-    </div>
-
-    <div class="row">
-      <label class="field"><span>Variants</span>
+      <label class="field grow"><span>DPI</span><input type="number" id="dpi" min="1" step="1" value="300"></label>
+      <label class="field grow"><span>Variants</span>
         <select id="count">
           <option>1</option><option selected>2</option><option>3</option><option>4</option>
         </select>
       </label>
     </div>
+    <p class="readout small"><output id="pageReadout">—</output></p>
 
-    <div class="row">
-      <fieldset class="field grow">
-        <span>Fit</span>
+    <fieldset class="field">
+      <span>Fit</span>
+      <div class="segmented">
         <label class="radio"><input type="radio" name="fit" value="fill" checked> Fill page</label>
         <label class="radio"><input type="radio" name="fit" value="fit"> Fit with margin</label>
-      </fieldset>
-    </div>
+      </div>
+    </fieldset>
 
     <p id="shapeNote" class="banner warn" hidden></p>
 
@@ -87,6 +86,15 @@
     </div>
 
     <p id="genError" class="error" hidden></p>
+  </section>
+
+  </div>
+
+  <div class="pane output" id="outputPane">
+
+  <section class="empty" id="emptyState">
+    <h2>Results show here</h2>
+    <p class="muted">Write a prompt, pick a paper size and press Generate. Each variant lands here at full resolution, ready to export or to use as the reference for an edit.</p>
   </section>
 
   <section class="card" id="progressCard" hidden>
@@ -100,13 +108,17 @@
       <output class="muted small">Nothing is lost — images already saved stay in the job folder.</output>
       <button id="retryJob" class="ghost small">Try again</button>
     </div>
-    <pre id="progressLog" class="log"></pre>
+    <details class="logbox" open>
+      <summary class="muted small">Codex log</summary>
+      <pre id="progressLog" class="log"></pre>
+    </details>
   </section>
 
   <section class="card" id="resultsCard" hidden>
     <h2>Pick one to export</h2>
     <div id="grid" class="grid"></div>
 
+    <div class="exportopts">
     <fieldset class="field">
       <span>Format</span>
       <label class="radio"><input type="radio" name="format" value="pdf" checked> PDF</label>
@@ -127,6 +139,7 @@
       <label class="radio"><input type="radio" name="watermark" value="off" checked> Off</label>
       <label class="radio"><input type="radio" name="watermark" value="on"> On</label>
     </fieldset>
+    </div>
     <label class="field" id="watermarkField" hidden>
       <span>Watermark text</span>
       <input type="text" id="watermarkText" placeholder="PROOF">
@@ -148,6 +161,8 @@
       <button id="openFolder" class="ghost">Open folder</button>
     </div>
   </section>
+
+  </div>
 
 </main>
 

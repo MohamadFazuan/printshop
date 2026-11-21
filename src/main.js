@@ -766,7 +766,7 @@ handle('shell:reveal', async ({ target }) => {
 
 function createWindow () {
   const win = mainWindow = new BrowserWindow({
-    width: 940,
+    width: 1200,
     height: 820,
     minWidth: 720,
     minHeight: 600,
