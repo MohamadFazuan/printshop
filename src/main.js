@@ -189,6 +189,35 @@ const CODEX_CANDIDATES = process.platform === 'win32'
 // A macOS GUI app does not inherit the shell PATH, so `which codex` is useless
 // there. A Windows one does inherit the user PATH, which is where npm, nvm and
 // pnpm put their shims — so `where` is the only way to find a custom prefix.
+// nvm installs codex under a per-Node-version prefix that no fixed candidate
+// covers. Its bin/codex is a `#!/usr/bin/env node` script, which fails without
+// the shell PATH, so point at the native binary bundled inside the package.
+const POSIX_TRIPLE = {
+  'darwin-arm64': 'aarch64-apple-darwin',
+  'darwin-x64': 'x86_64-apple-darwin',
+  'linux-arm64': 'aarch64-unknown-linux-musl',
+  'linux-x64': 'x86_64-unknown-linux-musl'
+}[`${process.platform}-${process.arch}`]
+
+const versionKey = (v) => v.replace(/^v/, '').split('.').map(Number)
+const newestFirst = (a, b) => {
+  const [x, y] = [versionKey(a), versionKey(b)]
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return (y[i] || 0) - (x[i] || 0)
+  return 0
+}
+
+async function nvmCandidates () {
+  if (process.platform === 'win32' || !POSIX_TRIPLE) return []
+  const root = path.join(process.env.NVM_DIR || path.join(os.homedir(), '.nvm'), 'versions', 'node')
+  let versions
+  try { versions = await fs.readdir(root) } catch { return [] }
+  return versions.sort(newestFirst).map((v) => path.join(
+    root, v, 'lib', 'node_modules', '@openai', 'codex',
+    'node_modules', '@openai', `codex-${process.platform}-${process.arch}`,
+    'vendor', POSIX_TRIPLE, 'bin', 'codex'
+  ))
+}
+
 async function codexOnPath () {
   if (process.platform !== 'win32') return []
   try {
@@ -199,7 +228,7 @@ async function codexOnPath () {
 
 async function findCodex (override) {
   const tried = new Set()
-  for (const raw of [override, ...(await codexOnPath()), ...CODEX_CANDIDATES]) {
+  for (const raw of [override, ...(await codexOnPath()), ...CODEX_CANDIDATES, ...(await nvmCandidates())]) {
     if (!raw) continue
     for (const bin of unshim(raw)) {
       if (tried.has(bin)) continue
