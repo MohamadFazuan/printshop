@@ -552,6 +552,24 @@ handle('image:describeReferences', async ({ paths }) => {
 // reference. sharp decodes it in assertReadable, so a bad paste fails here.
 const PASTE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
 
+const PASTED_DIR = () => path.join(app.getPath('temp'), 'printshop-references')
+const PASTED_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+// A pasted reference is only needed while it sits in the list, and the list
+// does not survive a restart. Anything a day old is orphaned; clear it at launch.
+async function prunePastedReferences () {
+  const dir = PASTED_DIR()
+  let names
+  try { names = await fs.readdir(dir) } catch { return }
+  const cutoff = Date.now() - PASTED_MAX_AGE_MS
+  await Promise.all(names.filter((n) => n.startsWith('pasted-')).map(async (name) => {
+    const file = path.join(dir, name)
+    try {
+      if ((await fs.stat(file)).mtimeMs < cutoff) await fs.unlink(file)
+    } catch { /* already gone, or in use — try again next launch */ }
+  }))
+}
+
 handle('image:saveReferenceData', async ({ type, data }) => {
   const ext = PASTE_TYPES[type]
   if (!ext) throw new Error(`A pasted reference has to be PNG, JPEG or WebP, not ${type || 'unknown'}.`)
@@ -560,7 +578,7 @@ handle('image:saveReferenceData', async ({ type, data }) => {
   if (buffer.length > MAX_REFERENCE_BYTES) {
     throw new Error(`That pasted image is ${(buffer.length / 1024 / 1024).toFixed(0)} MB. Use one under 20 MB.`)
   }
-  const dir = path.join(app.getPath('temp'), 'printshop-references')
+  const dir = PASTED_DIR()
   await fs.mkdir(dir, { recursive: true })
   const file = path.join(dir, `pasted-${today()}-${crypto.randomBytes(3).toString('hex')}.${ext}`)
   await fs.writeFile(file, buffer)
@@ -766,6 +784,7 @@ function createWindow () {
 
 app.whenReady().then(() => {
   createWindow()
+  prunePastedReferences()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
