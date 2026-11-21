@@ -191,6 +191,17 @@ test('an attached reference is described, bounded, and kept out of the folder', 
   assert.match(brief, /Do not save, copy or reproduce the reference/i)
 })
 
+test('several references are counted, combined, and all kept out of the folder', () => {
+  const brief = generateInstruction('a red mountain', A4, ['01.png'], 3)
+  assert.match(brief, /3 reference images are attached/i)
+  assert.match(brief, /Combine them/i)
+  assert.match(brief, /aspect ratio above still win/i)
+  assert.match(brief, /Do not save, copy or reproduce the reference files/i)
+  // A count of one reads exactly like the single-reference brief.
+  assert.equal(generateInstruction('x', A4, ['01.png'], 1), generateInstruction('x', A4, ['01.png'], true))
+  assert.ok(!/reference/i.test(generateInstruction('x', A4, ['01.png'], 0)))
+})
+
 test('the brief forbids distorting content to fill the frame', () => {
   const { wPt, hPt } = sizeToPoints({ w: 10, h: 2, unit: 'ft' })
   const brief = generateInstruction('a menu banner', aspectFor(wPt, hPt), ['01.png'])

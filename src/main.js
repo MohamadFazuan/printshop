@@ -277,7 +277,7 @@ function tomlPath (value) {
 }
 
 // Codex writes the images itself, inside the job folder, on the ChatGPT plan.
-async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, referencePath }) {
+async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, referencePaths = [] }) {
   const { wPt, hPt } = sizeToPoints(size)
   const aspect = aspectFor(wPt, hPt)
   const wanted = Array.from({ length: count }, (_, i) => `${String(i + 1).padStart(2, '0')}.png`)
@@ -331,16 +331,16 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
           '--ephemeral',
           '--sandbox', 'workspace-write',
           '-c', `sandbox_workspace_write.writable_roots=[${tomlPath(jobDir)}]`,
-          // Codex reads the reference itself and attaches it to the prompt, so
-          // it never enters the sandbox and never lands in the job folder.
+          // Codex reads the references itself and attaches them to the prompt,
+          // so they never enter the sandbox and never land in the job folder.
           // `--image` takes a list, so it has to be followed by another flag or
           // it swallows the prompt — hence the `--` before the instruction.
-          ...(referencePath ? ['-i', referencePath] : []),
+          ...(referencePaths.length ? ['-i', ...referencePaths] : []),
           '--color', 'never',
           '-C', jobDir,
           '-o', outFile,
           '--',
-          generateInstruction(prompt, aspect, missing, Boolean(referencePath))
+          generateInstruction(prompt, aspect, missing, referencePaths.length)
         ], budgetMs, (line) => {
           const text = describeCodexEvent(line)
           if (!text) return
@@ -505,23 +505,57 @@ handle('settings:pickIcc', async () => {
 })
 
 const REFERENCE_TYPES = ['png', 'jpg', 'jpeg', 'webp']
+// Each one is uploaded with every generation attempt; past a handful the
+// agent averages them into mud rather than taking more from each.
+const MAX_REFERENCES = 4
+const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 
-handle('image:pickReference', async () => {
-  const result = await dialog.showOpenDialog({
-    properties: ['openFile'],
-    filters: [{ name: 'Reference image', extensions: REFERENCE_TYPES }]
-  })
-  if (result.canceled) return null
-  const chosen = result.filePaths[0]
-  const { width, height, bytes } = await assertReadable(chosen)
+async function describeReference (file) {
+  const { width, height, bytes } = await assertReadable(file)
   return {
-    path: chosen,
-    url: pathToFileURL(chosen).href,
-    name: path.basename(chosen),
+    path: file,
+    url: pathToFileURL(file).href,
+    name: path.basename(file),
     width,
     height,
     bytes
   }
+}
+
+handle('image:pickReference', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile', 'multiSelections'],
+    filters: [{ name: 'Reference image', extensions: REFERENCE_TYPES }]
+  })
+  if (result.canceled) return []
+  return Promise.all(result.filePaths.slice(0, MAX_REFERENCES).map(describeReference))
+})
+
+// Dropped or pasted files arrive as paths the renderer read off the File.
+handle('image:describeReferences', async ({ paths }) => {
+  if (!Array.isArray(paths)) throw new Error('No files were given.')
+  return Promise.all(paths.filter((p) => typeof p === 'string' && p)
+    .slice(0, MAX_REFERENCES).map(describeReference))
+})
+
+// A pasted screenshot has no file behind it, and Codex only takes paths. Write
+// the bytes to a temp file, outside every job folder, and treat that as the
+// reference. sharp decodes it in assertReadable, so a bad paste fails here.
+const PASTE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }
+
+handle('image:saveReferenceData', async ({ type, data }) => {
+  const ext = PASTE_TYPES[type]
+  if (!ext) throw new Error(`A pasted reference has to be PNG, JPEG or WebP, not ${type || 'unknown'}.`)
+  const buffer = Buffer.from(data instanceof ArrayBuffer ? new Uint8Array(data) : data || [])
+  if (!buffer.length) throw new Error('The pasted image is empty.')
+  if (buffer.length > MAX_REFERENCE_BYTES) {
+    throw new Error(`That pasted image is ${(buffer.length / 1024 / 1024).toFixed(0)} MB. Use one under 20 MB.`)
+  }
+  const dir = path.join(app.getPath('temp'), 'printshop-references')
+  await fs.mkdir(dir, { recursive: true })
+  const file = path.join(dir, `pasted-${today()}-${crypto.randomBytes(3).toString('hex')}.${ext}`)
+  await fs.writeFile(file, buffer)
+  return describeReference(file)
 })
 
 // The file can go missing between picking it and pressing Generate, and Codex
@@ -539,7 +573,7 @@ async function assertReadable (file) {
   }
   if (!stat.isFile() || stat.size === 0) throw new Error('That reference image is empty.')
   // Codex uploads the file as-is; a huge one buys nothing and can stall the job.
-  if (stat.size > 20 * 1024 * 1024) {
+  if (stat.size > MAX_REFERENCE_BYTES) {
     throw new Error(`That reference image is ${(stat.size / 1024 / 1024).toFixed(0)} MB. Use one under 20 MB.`)
   }
   // A .png extension proves nothing — a renamed HEIC out of Photos is the usual
@@ -552,9 +586,13 @@ async function assertReadable (file) {
   }
 }
 
-handle('image:generate', async ({ prompt, size, count, referencePath }) => {
+handle('image:generate', async ({ prompt, size, count, referencePaths, referencePath }) => {
   if (!prompt || !prompt.trim()) throw new Error('Prompt is empty.')
-  if (referencePath) await assertReadable(referencePath)
+  // referencePath is the single-reference payload an older renderer sends.
+  const refs = [...new Set((Array.isArray(referencePaths) ? referencePaths : [referencePath])
+    .filter((p) => typeof p === 'string' && p))]
+  if (refs.length > MAX_REFERENCES) throw new Error(`Attach at most ${MAX_REFERENCES} reference images.`)
+  for (const ref of refs) await assertReadable(ref)
   const config = await readConfig()
   const outputDir = config.outputDir || defaultOutputDir()
 
@@ -565,7 +603,7 @@ handle('image:generate', async ({ prompt, size, count, referencePath }) => {
   const jobDir = path.join(outputDir, today(), `${slugify(prompt)}-${crypto.randomBytes(2).toString('hex')}`)
   await fs.mkdir(jobDir, { recursive: true })
 
-  emitProgress({ phase: 'start', total: n, renderSize, reference: referencePath ? path.basename(referencePath) : null })
+  emitProgress({ phase: 'start', total: n, renderSize, reference: refs.length ? refs.map((p) => path.basename(p)).join(', ') : null })
 
   let files
   let shortfall = 0
@@ -575,7 +613,7 @@ handle('image:generate', async ({ prompt, size, count, referencePath }) => {
     const found = await findCodex(config.codexPath)
     if (!found) throw new Error('Codex CLI not found. Install it, or set its path in Settings.')
     ;({ files, shortfall, reason, timedOut } = await generateViaCodex({
-      prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin, referencePath
+      prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin, referencePaths: refs
     }))
   } catch (error) {
     emitProgress({ phase: 'failed', text: error.message })

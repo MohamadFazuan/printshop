@@ -10,7 +10,8 @@ let selectedFile = null
 let selectedIndex = 0
 let promptBeforeCodex = null
 let codexFound = null
-let reference = null
+let references = []
+const MAX_REFERENCES = 4
 
 // ---------------------------------------------------------------------------
 // Size maths — mirrors toPoints() / renderSizeFor() / dpiAdvice() in core.js.
@@ -375,7 +376,7 @@ async function generate () {
       prompt: $('prompt').value,
       size: currentSize(),
       count: Number($('count').value),
-      referencePath: reference?.path || null
+      referencePaths: references.map((r) => r.path)
     }), $('genError'))
 
     lastJob = job
@@ -623,42 +624,130 @@ document.addEventListener('keydown', (event) => {
   else if (event.key === 'ArrowRight') stepLightbox(1)
 })
 
-// The reference outlives a job on purpose — the usual run is several goes at
-// the same source image with a different prompt each time.
-function renderReference () {
-  const row = $('referenceRow')
-  if (!reference) {
-    row.hidden = true
-    $('referenceThumb').removeAttribute('src')
-    $('pickReference').textContent = 'Attach…'
-    return
-  }
-  $('referenceThumb').src = reference.url
-  $('referenceName').textContent = reference.name
-  $('referenceMeta').textContent =
-    `${reference.width} × ${reference.height} px · ${(reference.bytes / 1024 / 1024).toFixed(1)} MB`
-  $('pickReference').textContent = 'Replace…'
-  row.hidden = false
+// References outlive a job on purpose — the usual run is several goes at the
+// same source images with a different prompt each time.
+function renderReferences () {
+  const list = $('referenceList')
+  list.replaceChildren(...references.map((ref, index) => {
+    const item = document.createElement('li')
+    item.className = 'reference'
+    const thumb = document.createElement('img')
+    thumb.src = ref.url
+    thumb.alt = `Reference ${index + 1}: ${ref.name}`
+    const name = document.createElement('span')
+    name.className = 'muted small'
+    name.textContent = ref.name
+    const meta = document.createElement('span')
+    meta.className = 'muted small'
+    const size = ref.bytes >= 1024 * 1024
+      ? `${(ref.bytes / 1024 / 1024).toFixed(1)} MB`
+      : `${Math.max(1, Math.round(ref.bytes / 1024))} KB`
+    meta.textContent = `${ref.width} × ${ref.height} px · ${size}`
+    const remove = document.createElement('button')
+    remove.className = 'ghost small'
+    remove.textContent = 'Remove'
+    remove.setAttribute('aria-label', `Remove ${ref.name}`)
+    remove.addEventListener('click', () => {
+      references.splice(index, 1)
+      hide($('referenceError'))
+      renderReferences()
+    })
+    item.append(thumb, name, meta, remove)
+    return item
+  }))
+  list.hidden = references.length === 0
+  const full = references.length >= MAX_REFERENCES
+  $('pickReference').disabled = full
+  $('pickReference').textContent = full ? 'Full (4)' : references.length ? 'Add…' : 'Attach…'
 }
 
-$('pickReference').addEventListener('click', async () => {
+// Same file twice adds nothing but a second upload. Past the cap, say what was
+// dropped rather than silently ignoring it.
+function addReferences (picked) {
+  const known = new Set(references.map((r) => r.path))
+  const fresh = picked.filter((r) => r && !known.has(r.path) && known.add(r.path))
+  const room = MAX_REFERENCES - references.length
+  references.push(...fresh.slice(0, room))
+  renderReferences()
+  if (fresh.length > room) {
+    show($('referenceError'), `Only ${MAX_REFERENCES} reference images fit — ${fresh.length - room} not added.`)
+  }
+}
+
+async function withReferenceErrors (fn) {
   hide($('referenceError'))
   try {
-    const picked = unwrap(await api.pickReference(), $('referenceError'))
-    if (picked) reference = picked
-    renderReference()
+    await fn()
   } catch (error) {
     // unwrap() renders a refusal from main itself. Anything else — an older
     // window still running the previous preload, a dialog that threw — would
     // otherwise leave the button looking dead.
     if ($('referenceError').hidden) show($('referenceError'), error.message)
   }
+}
+
+$('pickReference').addEventListener('click', () => withReferenceErrors(async () => {
+  addReferences(unwrap(await api.pickReference(), $('referenceError')) || [])
+}))
+
+// A File with a path on disk (Finder drag, copied file) is described where it
+// is. One without (a screenshot on the clipboard, an image dragged out of a
+// browser) is written to a temp file by main first.
+async function ingestFiles (files) {
+  const images = [...files].filter((f) => f.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(f.name))
+  if (!images.length) throw new Error('Only PNG, JPEG or WebP images can be references.')
+  const room = MAX_REFERENCES - references.length
+  if (room <= 0) throw new Error(`Already ${MAX_REFERENCES} reference images — remove one first.`)
+  const picked = []
+  for (const file of images.slice(0, room)) {
+    const onDisk = api.pathForFile(file)
+    if (onDisk) {
+      picked.push(...unwrap(await api.describeReferences({ paths: [onDisk] }), $('referenceError')))
+    } else {
+      picked.push(unwrap(await api.saveReferenceData({ type: file.type, data: await file.arrayBuffer() }), $('referenceError')))
+    }
+  }
+  addReferences(picked)
+  if (images.length > room) {
+    show($('referenceError'), `Only ${MAX_REFERENCES} reference images fit — ${images.length - room} not added.`)
+  }
+}
+
+// Electron navigates the whole window to a file dropped anywhere it is not
+// handled, which throws away the session. Swallow every drop; act only on the
+// compose card.
+const composeCard = $('composeCard')
+let dragDepth = 0
+const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes('Files')
+
+document.addEventListener('dragover', (event) => event.preventDefault())
+document.addEventListener('drop', (event) => event.preventDefault())
+
+composeCard.addEventListener('dragenter', (event) => {
+  if (!hasFiles(event)) return
+  dragDepth++
+  composeCard.classList.add('dropping')
+})
+composeCard.addEventListener('dragleave', () => {
+  if (dragDepth > 0 && --dragDepth === 0) composeCard.classList.remove('dropping')
+})
+composeCard.addEventListener('drop', (event) => {
+  dragDepth = 0
+  composeCard.classList.remove('dropping')
+  if (!hasFiles(event)) return
+  withReferenceErrors(() => ingestFiles(event.dataTransfer.files))
 })
 
-$('clearReference').addEventListener('click', () => {
-  reference = null
-  hide($('referenceError'))
-  renderReference()
+// Paste text into the prompt as usual; only an image on the clipboard becomes
+// a reference.
+document.addEventListener('paste', (event) => {
+  const files = [...(event.clipboardData?.items || [])]
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter(Boolean)
+  if (!files.length) return
+  event.preventDefault()
+  withReferenceErrors(() => ingestFiles(files))
 })
 
 $('generate').addEventListener('click', generate)

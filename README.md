@@ -96,7 +96,7 @@ Two things the app does about that, both learned the hard way:
 | Control | What it does |
 |---|---|
 | ✍️ **Prompt** | What to draw. Plain description works; art-direction language works better. |
-| 🖼️ **Reference image** | Optional. Attach a PNG, JPEG or WebP and the artwork takes its subject, style, colour and composition from it. Your page's shape still wins over the reference's. |
+| 🖼️ **Reference images** | Optional, up to 4. Attach, drag onto the form, or paste (⌘V / Ctrl+V — a screenshot works) PNG, JPEG or WebP images, and the artwork takes its subject, style, colour and composition from them. Your page's shape still wins over the references'. |
 | 📏 **Size** | 59 presets — ISO A0–A7, ISO B0–B5, US, photo, cards, stationery, stickers & labels, large format, signage, apparel & merch, square — or **Custom** in `mm / cm / in / ft / px`. |
 | 🔄 **Landscape** | Swaps width and height. |
 | 🔢 **DPI** | Converts `px` custom sizes and drives the resolution readout. 300 is the print default. |

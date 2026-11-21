@@ -175,8 +175,11 @@ function aspectStrain (wPt, hPt, imgW, imgH) {
 //
 // Named files rather than a count, because a retry must fill only the gaps —
 // asking again for "4 images" would overwrite the ones that already succeeded.
-function generateInstruction (prompt, aspect, names, hasReference = false) {
+function generateInstruction (prompt, aspect, names, references = 0) {
   const many = names.length > 1
+  // Older callers passed a boolean; true still means one reference.
+  const refCount = references === true ? 1 : Math.max(0, Number(references) || 0)
+  const refs = refCount > 1
   return [
     `Generate ${names.length} DIFFERENT image${many ? 's' : ''} using your built-in image model.`,
     `Orientation: ${aspect.orientation}. Aspect ratio ${aspect.ratio}. Target ${aspect.pxW} × ${aspect.pxH} pixels, or the largest the model allows at that ratio.`,
@@ -187,14 +190,16 @@ function generateInstruction (prompt, aspect, names, hasReference = false) {
     'Geometry must be true: circles perfectly circular, squares perfectly square, faces and objects in natural proportion, and lettering at normal letter width.',
     'Do NOT stretch, squash or distort anything to fill the frame. Compose across it instead — more elements, or more space between them.',
     'Use the image model. Do NOT draw the image with code, matplotlib, SVG or any other library.',
-    // The attachment arrives through `codex exec -i`, so the agent sees it but
+    // The attachments arrive through `codex exec -i`, so the agent sees them but
     // has no copy on disk — and must not make one, because every .png in the
     // job folder is counted as a finished variant.
-    ...(hasReference
+    ...(refCount
       ? [
-          'A reference image is attached to this message. Take subject, style, colour and composition from it.',
-          'The orientation and aspect ratio above still win, even where the reference disagrees.',
-          'Do not save, copy or reproduce the reference file itself into the folder.'
+          refs
+            ? `${refCount} reference images are attached to this message. Combine them: take subject, style, colour and composition from across all of them.`
+            : 'A reference image is attached to this message. Take subject, style, colour and composition from it.',
+          `The orientation and aspect ratio above still win, even where the reference${refs ? 's disagree' : ' disagrees'}.`,
+          `Do not save, copy or reproduce the reference file${refs ? 's' : ''} into the folder.`
         ]
       : []),
     `Save the result${many ? 's' : ''} in the current working directory as ${names.join(', ')}.`,

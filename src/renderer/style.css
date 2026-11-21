@@ -212,6 +212,14 @@ button.small { padding: 4px 10px; font-size: 12px; }
 }
 .sheet { max-width: 520px; margin: 0 auto; background: #fff; }
 
+.references {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .reference {
   display: flex;
   align-items: center;
@@ -226,3 +234,7 @@ button.small { padding: 4px 10px; font-size: 12px; }
   background: #fff;
 }
 .reference span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.card.dropping {
+  outline: 2px dashed rgba(0, 0, 0, 0.45);
+  outline-offset: -6px;
+}
