@@ -8,6 +8,7 @@ const crypto = require('node:crypto')
 const { pathToFileURL } = require('node:url')
 const { execFile, spawn } = require('node:child_process')
 const { promisify } = require('node:util')
+const QRCode = require('qrcode')
 
 const execFileAsync = promisify(execFile)
 
@@ -63,8 +64,14 @@ const {
   PT_PER_UNIT, UNITS, SIZE_PRESETS,
   EXPORT_FORMATS, COLOUR_SPACES, CMYK_CAPABLE,
   renderSizeFor, aspectFor, pngSize, sizeToPoints, buildPdf, slugify, today,
-  watermarkSvg, pixelCanvas, clip, classifyFailure, generateInstruction
+  watermarkSvg, pixelCanvas, clip, classifyFailure, generateInstruction, upscalePlan,
+  stickerImageRect, stickerLayout, buildHeaderProof, HEADER_LAYOUTS
 } = require('./core')
+const {
+  CUT_KINDS, CUT_LABELS, BLEED_PT, MM, CONTOUR_OFFSETS_MM, DEFAULT_OFFSET_MM, SHEETS,
+  subjectMask, contourCutPath, fitContourRect, shapeCutPath, pathToSvg,
+  clampInset, MARK_INSET_PT, MARK_INSET_MIN_MM, MARK_INSET_MAX_MM, clampHeaderHeight, SHEETS: SHEET_SIZES
+} = require('./cutline')
 
 // ---------------------------------------------------------------------------
 // Settings. The key is encrypted at rest and never leaves the main process.
@@ -284,7 +291,7 @@ function tomlPath (value) {
 }
 
 // Codex writes the images itself, inside the job folder, on the ChatGPT plan.
-async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, referencePaths = [] }) {
+async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, referencePaths = [], cut = 'none' }) {
   const { wPt, hPt } = sizeToPoints(size)
   const aspect = aspectFor(wPt, hPt)
   const wanted = Array.from({ length: count }, (_, i) => `${String(i + 1).padStart(2, '0')}.png`)
@@ -348,7 +355,7 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
           '-C', jobDir,
           '-o', outFile,
           '--',
-          generateInstruction(prompt, aspect, missing, referencePaths.length)
+          generateInstruction(prompt, aspect, missing, referencePaths.length, cut)
         ], budgetMs, (line) => {
           const text = describeCodexEvent(line)
           if (!text) return
@@ -468,7 +475,12 @@ handle('catalog:get', async () => ({
   ptPerUnit: PT_PER_UNIT,
   formats: EXPORT_FORMATS,
   colourSpaces: COLOUR_SPACES,
-  cmykCapable: CMYK_CAPABLE
+  cmykCapable: CMYK_CAPABLE,
+  cutKinds: CUT_KINDS.map((id) => ({ id, label: CUT_LABELS[id] })),
+  contourOffsetsMm: CONTOUR_OFFSETS_MM,
+  defaultOffsetMm: DEFAULT_OFFSET_MM,
+  sheets: Object.entries(SHEETS).map(([id, sheet]) => ({ id, label: sheet.label })),
+  markInset: { defaultMm: MARK_INSET_PT / MM, minMm: MARK_INSET_MIN_MM, maxMm: MARK_INSET_MAX_MM }
 }))
 
 handle('settings:get', async () => {
@@ -477,12 +489,24 @@ handle('settings:get', async () => {
     outputDir: config.outputDir || defaultOutputDir(),
     codexPath: config.codexPath || '',
     iccPath: config.iccPath || '',
-    watermarkText: config.watermarkText || 'PROOF'
+    watermarkText: config.watermarkText || 'PROOF',
+    ...Object.fromEntries(HEADER_KEYS.map((key) => [key, config[key] ?? ''])),
+    headerLabel: config.headerLabel ?? 'Untuk Tempahan:',
+    headerLayout: config.headerLayout || 'brand-left',
+    headerHeightMm: config.headerHeightMm || 15,
+    headerNameScale: config.headerNameScale || 100,
+    headerContactScale: config.headerContactScale || 100,
+    headerColor: config.headerColor || '#000000',
+    headerFont: config.headerFont || 'helvetica'
   }
 })
 
-handle('settings:save', async ({ outputDir, codexPath, iccPath, watermarkText }) => {
+handle('settings:save', async (payload) => {
+  const { outputDir, codexPath, iccPath, watermarkText } = payload
   const config = await readConfig()
+  for (const key of HEADER_KEYS) {
+    if (typeof payload[key] === 'string' || typeof payload[key] === 'number') config[key] = typeof payload[key] === 'string' ? payload[key].trim() : payload[key]
+  }
   if (outputDir) config.outputDir = outputDir
   if (typeof codexPath === 'string') config.codexPath = codexPath.trim()
   if (typeof iccPath === 'string') config.iccPath = iccPath.trim()
@@ -494,6 +518,51 @@ handle('settings:save', async ({ outputDir, codexPath, iccPath, watermarkText })
 handle('settings:pickFolder', async () => {
   const result = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
   return result.canceled ? null : result.filePaths[0]
+})
+
+handle('settings:pickLogo', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Logo image', extensions: ['png', 'jpg', 'jpeg', 'webp', 'svg', 'tif', 'tiff'] }]
+  })
+  if (result.canceled) return null
+  const chosen = result.filePaths[0]
+  try {
+    await sharp(chosen).metadata()
+  } catch (error) {
+    throw new Error(`That file could not be read as an image: ${error.message}`)
+  }
+  return chosen
+})
+
+handle('settings:pickFont', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'Font file', extensions: ['ttf', 'otf'] }]
+  })
+  if (result.canceled) return null
+  const chosen = result.filePaths[0]
+  try {
+    require('@pdf-lib/fontkit').create(await fs.readFile(chosen))
+  } catch (error) {
+    throw new Error(`That file could not be read as a font: ${error.message}`)
+  }
+  return chosen
+})
+
+// Prints the header, as typed in Settings, on a blank sheet and opens it.
+handle('header:test', async ({ values, sheet, markInsetMm }) => {
+  const header = await sheetHeaderData(values)
+  if (!header) throw new Error('The header is empty. Fill in at least a shop name, phone, QR link or logo.')
+  const key = SHEET_SIZES[sheet] && sheet !== 'single' ? sheet : 'a4'
+  const bytes = await buildHeaderProof(key, header, { marks: true, insetPt: clampInset(Number(markInsetMm || 10) * MM) })
+  const config = await readConfig()
+  const dir = config.outputDir || defaultOutputDir()
+  await fs.mkdir(dir, { recursive: true })
+  const out = path.join(dir, `header-test-${key.toUpperCase()}.pdf`)
+  await fs.writeFile(out, bytes)
+  await shell.openPath(out)
+  return out
 })
 
 handle('settings:pickIcc', async () => {
@@ -613,7 +682,7 @@ async function assertReadable (file) {
   }
 }
 
-handle('image:generate', async ({ prompt, size, count, referencePaths, referencePath }) => {
+handle('image:generate', async ({ prompt, size, count, referencePaths, referencePath, cut }) => {
   if (!prompt || !prompt.trim()) throw new Error('Prompt is empty.')
   // referencePath is the single-reference payload an older renderer sends.
   const refs = [...new Set((Array.isArray(referencePaths) ? referencePaths : [referencePath])
@@ -640,7 +709,8 @@ handle('image:generate', async ({ prompt, size, count, referencePaths, reference
     const found = await findCodex(config.codexPath)
     if (!found) throw new Error('Codex CLI not found. Install it, or set its path in Settings.')
     ;({ files, shortfall, reason, timedOut } = await generateViaCodex({
-      prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin, referencePaths: refs
+      prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin, referencePaths: refs,
+      cut: CUT_KINDS.includes(cut) ? cut : 'none'
     }))
   } catch (error) {
     emitProgress({ phase: 'failed', text: error.message })
@@ -715,7 +785,272 @@ async function renderRaster ({ file, size, fitMode, format, colour, watermark, i
   return pipeline.jpeg({ quality: 92, chromaSubsampling: '4:4:4' }).toBuffer()
 }
 
-handle('export:save', async ({ file, size, fitMode, format, colour, watermark }) => {
+// ---------------------------------------------------------------------------
+// AI upscaling. Codex renders top out near 1.5 MP — about 128 DPI on A4 — so a
+// print-sized page needs more pixels than the model gives. Real-ESRGAN
+// (ncnn-vulkan, BSD-3) adds real detail on the GPU, where a resize would only
+// blur. It ships in the installer as an extra resource; in development
+// `npm run fetch-upscaler` puts it in vendor/.
+// ---------------------------------------------------------------------------
+
+const UPSCALER_BIN = process.platform === 'win32' ? 'realesrgan-ncnn-vulkan.exe' : 'realesrgan-ncnn-vulkan'
+const UPSCALER_MODEL = 'realesrgan-x4plus'
+// Measured on an M-series Mac: ~90 s for a 1055 × 1491 render. Integrated or
+// older GPUs can be several times slower, so the budget is generous.
+const UPSCALE_TIMEOUT_MS = 10 * 60 * 1000
+
+async function findUpscaler () {
+  const osKey = { darwin: 'mac', win32: 'win' }[process.platform]
+  if (!osKey) return null
+  const dir = app.isPackaged
+    ? path.join(process.resourcesPath, 'upscaler')
+    : path.join(__dirname, '..', 'vendor', 'upscaler', osKey)
+  const bin = path.join(dir, UPSCALER_BIN)
+  const models = path.join(dir, 'models')
+  try {
+    await fs.access(bin)
+    await fs.access(path.join(models, `${UPSCALER_MODEL}.bin`))
+    return { bin, models }
+  } catch { return null }
+}
+
+handle('upscale:status', async () => ({ available: Boolean(await findUpscaler()) }))
+
+// The ncnn binary prints its progress ("41.67%") on stderr and exits 0 even
+// when it failed — a GPU out of memory, an unreadable input — so success is
+// judged by the file it leaves behind, never by the exit code.
+function runUpscaler ({ bin, models }, input, output, onPercent) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, ['-i', input, '-o', output, '-n', UPSCALER_MODEL, '-m', models],
+      { stdio: ['ignore', 'pipe', 'pipe'] })
+    let tail = ''
+    const timer = setTimeout(() => {
+      killTree(child)
+      reject(new Error(`Upscaling took longer than ${UPSCALE_TIMEOUT_MS / 60000} minutes and was stopped.`))
+    }, UPSCALE_TIMEOUT_MS)
+    child.stderr.on('data', (chunk) => {
+      const text = String(chunk)
+      tail = `${tail}${text}`.slice(-2000)
+      const matches = text.match(/(\d+(?:\.\d+)?)%/g)
+      if (matches) onPercent(parseFloat(matches[matches.length - 1]))
+    })
+    child.stdout.on('data', () => {})
+    child.on('error', (error) => { clearTimeout(timer); reject(error) })
+    child.on('close', () => { clearTimeout(timer); resolve(tail) })
+  })
+}
+
+// Returns the file to export from: the original when it already meets the
+// page's DPI, otherwise an upscaled copy sized to the page. Cached per size,
+// because the same variant is often exported several ways in a row.
+async function upscaledFor (file, size, fitMode) {
+  const meta = await sharp(file).metadata()
+  const { wPt, hPt } = sizeToPoints(size)
+  const plan = upscalePlan(meta.width, meta.height, wPt, hPt, fitMode)
+  if (!plan.needed) return { file, plan }
+
+  // A subfolder, not the job folder itself: every .png there counts as a variant.
+  const dir = path.join(path.dirname(file), 'upscaled')
+  const base = path.basename(file, path.extname(file))
+  const target = path.join(dir, `${base}-${plan.width}x${plan.height}.png`)
+  if (await fs.access(target).then(() => true, () => false)) return { file: target, plan }
+
+  const upscaler = await findUpscaler()
+  if (!upscaler) throw new Error('The AI upscaler is not installed with this copy of Printshop. Export without upscaling, or reinstall.')
+
+  await fs.mkdir(dir, { recursive: true })
+  const raw = path.join(dir, `.${base}-x4-${crypto.randomBytes(3).toString('hex')}.png`)
+  try {
+    emitProgress({ phase: 'upscale', percent: 0 })
+    const tail = await runUpscaler(upscaler, file, raw, (percent) => emitProgress({ phase: 'upscale', percent }))
+    let out
+    try { out = await sharp(raw).metadata() } catch { out = null }
+    if (!out || out.width !== meta.width * 4 || out.height !== meta.height * 4) {
+      const why = /OUT_OF_DEVICE_MEMORY|OutOfMemory|Insufficient Memory/i.test(tail)
+        ? 'the graphics chip ran out of memory'
+        : (tail.split('\n').map((l) => l.trim()).filter((l) => l && !/^\d+(\.\d+)?%$/.test(l)).pop() || 'no image came back')
+      throw new Error(`AI upscaling failed: ${why}.`)
+    }
+    // 4× usually overshoots the page; bring it down to what the page needs so
+    // the export is not four times the size it has to be.
+    await sharp(raw).resize(plan.width, plan.height, { kernel: 'lanczos3' }).png().toFile(target)
+    return { file: target, plan }
+  } finally {
+    fs.unlink(raw).catch(() => {})
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cut lines. The geometry is worked out from the variant as generated — an
+// upscaled copy has the same shape, so tracing the smaller file is faster and
+// lands on the same line.
+// ---------------------------------------------------------------------------
+
+// The trace runs at up to this many pixels on the long side: finer than any
+// blade follows on a sticker, and quick in plain JS.
+const TRACE_MAX_PX = 1000
+
+// Every Settings key the sticker-sheet header reads.
+const HEADER_KEYS = [
+  'headerName', 'headerTagline', 'headerLabel', 'headerPhone', 'headerExtra', 'headerQr', 'headerLogoPath',
+  'headerLayout', 'headerHeightMm', 'headerNameScale', 'headerContactScale', 'headerColor', 'headerFont', 'headerFontPath'
+]
+
+// The shop's own header for sticker sheets. Null when nothing is set.
+// `values` lets the Settings test print use what is typed but not yet saved.
+async function sheetHeaderData (values = null) {
+  const config = values || await readConfig()
+  const str = (key) => String(config[key] ?? '').trim()
+  const name = str('headerName')
+  const tagline = str('headerTagline')
+  const phone = str('headerPhone')
+  const extra = str('headerExtra')
+  const qrText = str('headerQr')
+  const logoPath = str('headerLogoPath')
+  if (!name && !tagline && !phone && !extra && !qrText && !logoPath) return null
+
+  let logo = null
+  if (logoPath) {
+    try {
+      // Any format sharp reads goes in as PNG, small enough for a header strip.
+      logo = await sharp(logoPath).resize({ height: 600, withoutEnlargement: true }).png().toBuffer()
+    } catch (error) {
+      throw new Error(`The header logo could not be read (${logoPath}): ${error.message}`)
+    }
+  }
+  let qr = null
+  if (qrText) {
+    const code = QRCode.create(qrText, { errorCorrectionLevel: 'M' })
+    qr = { size: code.modules.size, data: Array.from(code.modules.data) }
+  }
+
+  let fontBytes = null
+  if (str('headerFont') === 'custom') {
+    const fontPath = str('headerFontPath')
+    if (!fontPath) throw new Error('The header font is set to a font file, but none is chosen. Pick one in Settings or choose a built-in font.')
+    if (!/\.(ttf|otf)$/i.test(fontPath)) throw new Error('The header font must be a single .ttf or .otf file (font collections like .ttc are not supported).')
+    try {
+      fontBytes = await fs.readFile(fontPath)
+    } catch (error) {
+      throw new Error(`The header font could not be read (${fontPath}): ${error.message}`)
+    }
+    // A missing glyph prints as an empty box; catch it here, by name.
+    const face = require('@pdf-lib/fontkit').create(fontBytes)
+    for (const [field, text] of [['shop name', name], ['tagline', tagline], ['order label', str('headerLabel')], ['phone', phone], ['extra line', extra]]) {
+      const missing = [...text].filter((ch) => ch.trim() && !face.hasGlyphForCodePoint(ch.codePointAt(0)))
+      if (missing.length) throw new Error(`The font ${path.basename(fontPath)} has no ${[...new Set(missing)].join(' ')} for the header's ${field}. Choose a font that covers it.`)
+    }
+  }
+
+  return {
+    name,
+    tagline,
+    label: phone ? (config.headerLabel ?? 'Untuk Tempahan:') : str('headerLabel'),
+    phone,
+    extra,
+    logo,
+    qr,
+    layout: str('headerLayout') || 'brand-left',
+    heightPt: clampHeaderHeight(Number(config.headerHeightMm || 15) * MM),
+    nameScale: Number(config.headerNameScale) || 100,
+    contactScale: Number(config.headerContactScale) || 100,
+    color: str('headerColor') || '#000000',
+    font: str('headerFont') === 'custom' ? 'helvetica' : (str('headerFont') || 'helvetica'),
+    fontBytes
+  }
+}
+
+async function cutFor (file, size, fitMode, cut) {
+  const kind = cut && cut.kind
+  if (!CUT_KINDS.includes(kind) || kind === 'none') return null
+  const sheet = SHEETS[cut.sheet] ? cut.sheet : 'single'
+  const { wPt, hPt } = sizeToPoints(size)
+
+  // Cutting marks and the shop header only belong on a sheet.
+  const onSheet = sheet !== 'single'
+  const extras = {
+    pattern: onSheet && kind === 'circle' && cut.pattern === 'staggered' ? 'staggered' : 'grid',
+    markInsetPt: clampInset(Number(cut.markInsetMm ?? MARK_INSET_PT / MM) * MM),
+    marks: onSheet && cut.marks !== false,
+    header: onSheet && cut.header ? await sheetHeaderData() : null,
+    headerWanted: onSheet && Boolean(cut.header)
+  }
+
+  if (kind !== 'contour') {
+    return { kind, sheet, bleedPt: BLEED_PT, path: shapeCutPath(kind, wPt, hPt), pieces: 1, ignored: 0, ...extras }
+  }
+
+  const offsetMm = CONTOUR_OFFSETS_MM.includes(Number(cut.offsetMm)) ? Number(cut.offsetMm) : DEFAULT_OFFSET_MM
+  const meta = await sharp(file).metadata()
+  const scale = Math.min(1, TRACE_MAX_PX / Math.max(meta.width, meta.height))
+  const tw = Math.max(1, Math.round(meta.width * scale))
+  const th = Math.max(1, Math.round(meta.height * scale))
+  const { data } = await sharp(file).resize(tw, th, { fit: 'fill' }).ensureAlpha().raw()
+    .toBuffer({ resolveWithObject: true })
+  const mask = subjectMask(data, tw, th)
+
+  let filled = 0
+  for (let i = 0; i < mask.length; i++) filled += mask[i]
+  if (filled / mask.length > 0.97) {
+    throw new Error('A contour cut needs the artwork on plain white, but this variant fills the whole frame. ' +
+      'Choose a shape cut, or set Cut line to Contour before generating so the brief asks for a white background.')
+  }
+
+  const placed = stickerImageRect(meta.width, meta.height, wPt, hPt, fitMode, BLEED_PT)
+  const trim = { w: wPt, h: hPt }
+  const { rect, scale: fitScale } = fitContourRect({ mask, width: tw, height: th }, placed, offsetMm * MM, trim)
+  const traced = contourCutPath({ mask, width: tw, height: th }, rect, offsetMm * MM, trim)
+  // The PDF must place the image exactly where it was traced.
+  return { kind, sheet, bleedPt: BLEED_PT, offsetMm, imageRect: rect, shrunk: fitScale < 1 ? Math.round((1 - fitScale) * 100) : 0, ...traced, ...extras }
+}
+
+handle('cut:preview', async ({ file, size, fitMode, cut }) => {
+  const geometry = await cutFor(file, size, fitMode, cut)
+  if (!geometry) return null
+  const meta = await sharp(file).metadata()
+  const layout = stickerLayout(size, geometry)
+  const b = geometry.bleedPt
+  const boxW = layout.cellW
+  const boxH = layout.cellH
+  const rect = geometry.imageRect || stickerImageRect(meta.width, meta.height, layout.wPt, layout.hPt, fitMode, b)
+  // SVG is y down; the preview draws one sticker's bleed box.
+  const shifted = geometry.path.map((cmd) => cmd[0] === 'Z'
+    ? cmd
+    : [cmd[0], ...cmd.slice(1).map((v, i) => v + b)])
+  return {
+    boxW,
+    boxH,
+    trim: { x: b, y: b, w: layout.wPt, h: layout.hPt },
+    image: { x: b + rect.x, y: boxH - (b + rect.y + rect.height), w: rect.width, h: rect.height },
+    d: pathToSvg(shifted, boxH),
+    pieces: geometry.pieces,
+    ignored: geometry.ignored,
+    shrunk: geometry.shrunk || 0,
+    count: layout.count,
+    cols: layout.cols,
+    rows: layout.rows,
+    sheet: geometry.sheet === 'single' ? null : sheetPreview(layout, geometry)
+  }
+})
+
+// Whole-sheet thumbnail data: cell boxes, marks and the header strip, in SVG coordinates.
+function sheetPreview (layout, geometry) {
+  const H = layout.pageH
+  const marks = layout.marks.map((line) => line.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${(H - y).toFixed(1)}`).join('')).join('')
+  return {
+    pageW: layout.pageW,
+    pageH: H,
+    cellW: layout.cellW,
+    cellH: layout.cellH,
+    cells: layout.cells.map((c) => ({ x: c.x, y: H - c.y - layout.cellH })),
+    marks,
+    pattern: layout.pattern,
+    header: layout.header ? { x: layout.header.x, y: H - layout.header.y - layout.header.h, w: layout.header.w, h: layout.header.h } : null,
+    headerMissing: Boolean(geometry.headerWanted && !geometry.header)
+  }
+}
+
+handle('export:save', async ({ file, size, fitMode, format, colour, watermark, upscale, cut }) => {
   if (!EXPORT_FORMATS.includes(format)) throw new Error(`Unknown format: ${format}`)
   if (colour === 'cmyk' && !CMYK_CAPABLE.includes(format)) {
     throw new Error(`${format.toUpperCase()} cannot hold CMYK. Choose ${CMYK_CAPABLE.join(', ').toUpperCase()}.`)
@@ -725,10 +1060,30 @@ handle('export:save', async ({ file, size, fitMode, format, colour, watermark })
   const iccPath = config.iccPath || ''
   const jobDir = path.dirname(file)
 
+  // Traced from the variant before any upscale, so it matches what was previewed.
+  const cutGeometry = await cutFor(file, size, fitMode, cut)
+  if (cutGeometry && format !== 'pdf') {
+    throw new Error('A cut line needs PDF — the cutter reads it as a vector path, which PNG, JPEG and TIFF cannot carry.')
+  }
+
+  let upscaled = null
+  if (upscale) {
+    const result = await upscaledFor(file, size, fitMode)
+    if (result.file !== file) upscaled = { dpi: result.plan.reachedDpi, from: result.plan.dpi }
+    file = result.file
+  }
+
   // The name has to carry colour space and watermark, or a proof and a
   // press-ready file collide and one silently replaces the other.
   const parts = [path.basename(jobDir), (size.label || 'custom').replace(/[^a-zA-Z0-9]+/g, '')]
   if (colour === 'cmyk') parts.push('CMYK')
+  if (upscaled) parts.push('AI')
+  if (cutGeometry) {
+    parts.push('CUT')
+    if (cutGeometry.sheet !== 'single') parts.push(`${cutGeometry.sheet.toUpperCase()}SHEET`)
+    if (cutGeometry.sheet !== 'single' && cutGeometry.pattern === 'staggered') parts.push('STAGGER')
+    if (cutGeometry.marks) parts.push('MARKS')
+  }
   if (watermark && watermark.text) {
     parts.push(watermark.text.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 12).toUpperCase() || 'WM')
   }
@@ -739,7 +1094,21 @@ handle('export:save', async ({ file, size, fitMode, format, colour, watermark })
     outPath = path.join(jobDir, `${parts.join('-')}-${n}.${ext}`)
   }
 
-  if (format === 'pdf') {
+  let sheetCount = null
+  if (cutGeometry) {
+    // The image is placed per sticker, so it goes in as is — CMYK or not —
+    // rather than pre-rendered to one page canvas.
+    let embedded
+    if (colour === 'cmyk') {
+      if (!iccPath) throw new Error('Set your CMYK profile (.icc) in Settings first — converting without one produces the wrong colours on press.')
+      embedded = await sharp(file).flatten({ background: '#ffffff' }).withIccProfile(iccPath).toColourspace('cmyk')
+        .jpeg({ quality: 92, chromaSubsampling: '4:4:4' }).toBuffer()
+    } else {
+      embedded = await fs.readFile(file)
+    }
+    await fs.writeFile(outPath, await buildPdf(embedded, size, fitMode, watermark, colour, cutGeometry))
+    sheetCount = stickerLayout(size, cutGeometry).count
+  } else if (format === 'pdf') {
     // A CMYK PDF needs CMYK pixels inside it, so the image goes through sharp first.
     const embedded = colour === 'cmyk'
       ? await renderRaster({ file, size, fitMode, format: 'jpeg', colour, watermark: null, iccPath })
@@ -751,7 +1120,12 @@ handle('export:save', async ({ file, size, fitMode, format, colour, watermark })
   }
 
   const { size: bytes } = await fs.stat(outPath)
-  return { outPath, bytes }
+  return {
+    outPath,
+    bytes,
+    upscaled,
+    cut: cutGeometry ? { kind: cutGeometry.kind, count: sheetCount, pieces: cutGeometry.pieces, marks: Boolean(cutGeometry.marks), header: Boolean(cutGeometry.header) } : null
+  }
 })
 
 handle('shell:reveal', async ({ target }) => {

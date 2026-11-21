@@ -11,8 +11,11 @@ const { PDFDocument } = require('pdf-lib')
 const {
   toPoints, sizeToPoints, renderSizeFor, aspectFor, aspectStrain, ratioLabel, pngSize, drawRect, buildPdf,
   slugify, today, SIZE_PRESETS, dpiAdvice, classifyFailure, generateInstruction,
-  watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE
+  watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE,
+  upscalePlan, stickerLayout, stickerImageRect
 } = require('../src/core')
+const cutline = require('../src/cutline')
+const { PDFName, PDFDict } = require('pdf-lib')
 
 const tests = []
 const test = (name, fn) => tests.push({ name, fn })
@@ -218,6 +221,34 @@ test('the aspect ratio is stated whether or not a reference is attached', () => 
   for (const withRef of [false, true]) {
     assert.match(generateInstruction('x', A4, ['01.png'], withRef), /Aspect ratio 1:1\.41/)
   }
+})
+
+// --- Upscaling ----------------------------------------------------------------
+// Real-ESRGAN takes ~90 s an image, so the plan decides whether to pay that at
+// all, and how far: to the DPI the page wants, never past the model's 4×.
+
+test('an A4 render is upscaled just far enough to reach 300 DPI', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 210, h: 297, unit: 'mm' })
+  const plan = upscalePlan(1055, 1491, wPt, hPt)
+  assert.equal(plan.needed, true)
+  assert.equal(plan.dpi, 128)
+  assert.equal(plan.reachedDpi, 300)
+  assert.equal(plan.height, 3508)
+})
+
+test('a banner is capped at 4× even when that falls short', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 10, h: 2, unit: 'ft' })
+  const plan = upscalePlan(2500, 500, wPt, hPt)
+  assert.equal(plan.factor, 4)
+  assert.deepEqual([plan.width, plan.height], [10000, 2000])
+  assert.ok(plan.reachedDpi < plan.want)
+})
+
+test('an image that already meets the page is left alone', () => {
+  const { wPt, hPt } = sizeToPoints({ w: 210, h: 297, unit: 'mm' })
+  assert.equal(upscalePlan(4000, 5600, wPt, hPt).needed, false)
+  // Within 5% is not worth a 90-second wait.
+  assert.equal(upscalePlan(2420, 3420, wPt, hPt).needed, false)
 })
 
 // --- Failure classification ------------------------------------------------
@@ -463,6 +494,308 @@ test('slugs stay filesystem-safe and never end up empty', () => {
 
 test('date folders sort chronologically', () => {
   assert.equal(today(new Date(2026, 7, 4)), '2026-08-04')
+})
+
+
+// --- Cut lines -------------------------------------------------------------
+// A cutter keys on the spot colour's name, so the name, the geometry and the
+// sheet maths are what a print shop would check before trusting a file.
+
+// RGBA canvas: white, with filled discs drawn in black.
+function canvasWithDiscs (w, h, discs) {
+  const rgba = new Uint8Array(w * h * 4).fill(255)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (discs.some(([cx, cy, r]) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r)) {
+        const o = (y * w + x) * 4
+        rgba[o] = rgba[o + 1] = rgba[o + 2] = 0
+      }
+    }
+  }
+  return rgba
+}
+
+test('a contour cut sits the chosen border outside the artwork', () => {
+  const w = 200
+  const rgba = canvasWithDiscs(w, w, [[100, 100, 50]])
+  const mask = cutline.subjectMask(rgba, w, w)
+  // 200 px across 100 pt: 0.5 pt per px; a 2 mm border is ~11.3 px.
+  const rect = { x: 0, y: 0, width: 100, height: 100 }
+  const offset = 2 * cutline.MM
+  const { path, pieces } = cutline.contourCutPath({ mask, width: w, height: w }, rect, offset)
+  assert.equal(pieces, 1)
+  const radii = path.filter((c) => c[0] !== 'Z').map(([, x, y]) => Math.hypot(x - 50, y - 50))
+  const expected = 25 + offset // disc radius 50 px = 25 pt
+  for (const r of radii) near(r, expected, 0.9)
+})
+
+test('white inside the artwork does not punch a hole in the cut', () => {
+  const w = 120
+  const rgba = canvasWithDiscs(w, w, [[60, 60, 40]])
+  // A white eye in the middle of the black disc.
+  for (let y = 50; y < 70; y++) for (let x = 50; x < 70; x++) rgba.fill(255, (y * w + x) * 4, (y * w + x) * 4 + 3)
+  const mask = cutline.subjectMask(rgba, w, w)
+  assert.equal(mask[60 * w + 60], 1, 'interior white was treated as background')
+  const { path } = cutline.contourCutPath({ mask, width: w, height: w }, { x: 0, y: 0, width: 120, height: 120 }, 3)
+  assert.equal(path.filter((c) => c[0] === 'Z').length, 1)
+})
+
+test('parts close together share one outline; specks are dropped', () => {
+  const w = 300
+  // Two discs 6 px apart, plus a 1 px speck far away.
+  const rgba = canvasWithDiscs(w, w, [[90, 150, 50], [196, 150, 50], [290, 10, 1]])
+  const mask = cutline.subjectMask(rgba, w, w)
+  const out = cutline.contourCutPath({ mask, width: w, height: w }, { x: 0, y: 0, width: 150, height: 150 }, 2 * cutline.MM)
+  assert.equal(out.pieces, 1)
+  assert.equal(out.ignored, 1)
+})
+
+test('a blank image refuses a contour cut instead of cutting nothing', () => {
+  const w = 50
+  const mask = cutline.subjectMask(new Uint8Array(w * w * 4).fill(255), w, w)
+  assert.throws(() => cutline.contourCutPath({ mask, width: w, height: w }, { x: 0, y: 0, width: 50, height: 50 }, 3), /No artwork/)
+})
+
+test('shape cuts land on the trim edge', () => {
+  const xs = (p) => p.filter((c) => c[0] !== 'Z').flatMap((c) => c.slice(1).filter((_, i) => i % 2 === 0))
+  const rect = cutline.shapeCutPath('rect', 100, 60)
+  assert.deepEqual([Math.min(...xs(rect)), Math.max(...xs(rect))], [0, 100])
+  const circle = cutline.shapeCutPath('circle', 80, 80)
+  near(Math.min(...xs(circle)), 0)
+  near(Math.max(...xs(circle)), 80)
+  assert.throws(() => cutline.shapeCutPath('contour', 10, 10), /Not a shape/)
+})
+
+test('sheets tile the most stickers and keep the margins', () => {
+  const size = { w: 50, h: 50, unit: 'mm' }
+  const cut = { bleedPt: cutline.BLEED_PT, sheet: 'a4' }
+  const a4 = stickerLayout(size, cut)
+  // 54 mm cells, 4 mm gap, 10 mm margins: 3 across 190 mm, 4 down 277 mm.
+  assert.equal(a4.count, 12)
+  for (const c of a4.cells) {
+    assert.ok(c.x >= cutline.SHEET_MARGIN_PT - 0.01 && c.y >= cutline.SHEET_MARGIN_PT - 0.01)
+    assert.ok(c.x + a4.cellW <= a4.pageW - cutline.SHEET_MARGIN_PT + 0.01)
+  }
+  assert.equal(stickerLayout(size, { ...cut, sheet: 'a3plus' }).count, 40)
+  // A long sticker turns the sheet landscape if more fit that way.
+  const bumper = stickerLayout({ w: 300, h: 75, unit: 'mm' }, { ...cut, sheet: 'a3' })
+  assert.ok(bumper.pageW > bumper.pageH)
+  assert.throws(() => stickerLayout({ w: 400, h: 400, unit: 'mm' }, cut), /too big/)
+})
+
+test('a sticker PDF carries the cut as a CutContour spot colour, with trim and bleed', async () => {
+  const image = fs.readFileSync(path.join(__dirname, '..', 'build', 'icon.png'))
+  const size = { w: 50, h: 50, unit: 'mm' }
+  const { wPt, hPt } = sizeToPoints(size)
+  const cut = { kind: 'rounded', sheet: 'single', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('rounded', wPt, hPt) }
+  const doc = await PDFDocument.load(await buildPdf(image, size, 'fill', null, 'rgb', cut))
+  const page = doc.getPage(0)
+  near(page.getSize().width, wPt + 2 * cutline.BLEED_PT, 0.02)
+  near(page.getTrimBox().width, wPt, 0.02)
+  near(page.getTrimBox().x, cutline.BLEED_PT, 0.02)
+  const spaces = page.node.Resources().lookup(PDFName.of('ColorSpace'), PDFDict)
+  const sep = doc.context.lookup(spaces.get(PDFName.of('CutContour'))).toString()
+  assert.match(sep, /\/Separation \/CutContour \/DeviceCMYK/)
+
+  const sheet = await PDFDocument.load(await buildPdf(image, size, 'fill', null, 'rgb', { ...cut, sheet: 'a3' }))
+  near(sheet.getPage(0).getSize().width, 297 * cutline.MM, 0.05)
+})
+
+test('cutting marks match the shop sheet: bottom L corners and side ticks, 20 mm arms', () => {
+  const W = 297 * cutline.MM
+  const H = 420 * cutline.MM
+  const marks = cutline.sheetMarks(W, H)
+  assert.equal(marks.length, 6)
+  const inset = 10 * cutline.MM
+  const len = 20 * cutline.MM
+  // Bottom-left L: corner at the inset, both arms 20 mm.
+  assert.deepEqual(marks[0][1], [inset, inset])
+  near(marks[0][0][1] - inset, len)
+  near(marks[0][2][0] - inset, len)
+  // Bottom-right L mirrors it.
+  assert.deepEqual(marks[1][1], [W - inset, inset])
+  // Side bars are 20 mm, centred at the same height on both sides, ticks pointing in.
+  near(marks[2][1][1] - marks[2][0][1], len)
+  near(marks[4][1][1] - marks[4][0][1], len)
+  near(marks[3][0][1], H / 2)
+  near(marks[5][0][1], H / 2)
+  assert.ok(marks[3][1][0] > marks[3][0][0] && marks[5][1][0] < marks[5][0][0])
+  // No marks along the top: that edge belongs to the header.
+  for (const line of marks) for (const [, y] of line) assert.ok(y <= H / 2 + len / 2 + 0.01)
+})
+
+test('stickers keep clear of the marks and the header', () => {
+  const size = { w: 50, h: 50, unit: 'mm' }
+  const { wPt, hPt } = sizeToPoints(size)
+  const base = { kind: 'circle', sheet: 'a3', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('circle', wPt, hPt) }
+  const header = { name: 'SHOP', label: '', phone: '', logo: null, qr: null }
+  const L = stickerLayout(size, { ...base, marks: true, header })
+  const m = L.margins
+  near(m.left, 20.5 * cutline.MM)
+  near(m.right, 20.5 * cutline.MM)
+  assert.ok(m.bottom >= 15 * cutline.MM)
+  assert.ok(m.top >= 29 * cutline.MM - 0.01)
+  for (const c of L.cells) {
+    assert.ok(c.x >= m.left - 0.01 && c.x + L.cellW <= L.pageW - m.right + 0.01)
+    assert.ok(c.y >= m.bottom - 0.01 && c.y + L.cellH <= L.header.y + 0.01)
+  }
+  assert.equal(L.marks.length, 6)
+  // Off by default on a single sticker.
+  assert.equal(stickerLayout(size, { ...base, sheet: 'single', marks: true }).marks.length, 0)
+})
+
+test('the mark distance from the edge moves the marks and the stickers with it', () => {
+  const size = { w: 50, h: 50, unit: 'mm' }
+  const { wPt, hPt } = sizeToPoints(size)
+  const base = { kind: 'circle', sheet: 'a3', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('circle', wPt, hPt), marks: true }
+  const near10 = stickerLayout(size, { ...base, markInsetPt: 10 * cutline.MM })
+  const far = stickerLayout(size, { ...base, markInsetPt: 30 * cutline.MM })
+  near(far.marks[0][1][0], 30 * cutline.MM)
+  near(far.marks[0][1][1], 30 * cutline.MM)
+  assert.ok(far.count < near10.count, `${far.count} should be fewer than ${near10.count}`)
+  for (const c of far.cells) assert.ok(c.x >= far.margins.left - 0.01 && c.y >= far.margins.bottom - 0.01)
+  // Out-of-range values are clamped, never trusted.
+  near(cutline.clampInset(0), 3 * cutline.MM)
+  near(cutline.clampInset(999 * cutline.MM), 40 * cutline.MM)
+})
+
+test('staggered rows fit more round stickers and never overlap', () => {
+  const size = { w: 50, h: 50, unit: 'mm' }
+  const { wPt, hPt } = sizeToPoints(size)
+  const base = { kind: 'circle', sheet: 'a3', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('circle', wPt, hPt), marks: true }
+  const grid = stickerLayout(size, base)
+  const stag = stickerLayout(size, { ...base, pattern: 'staggered' })
+  assert.equal(stag.pattern, 'staggered')
+  assert.ok(stag.count > grid.count, `staggered ${stag.count} vs grid ${grid.count}`)
+  // Bleed circles stay apart by at least the gap; nothing crosses the margins.
+  const r = stag.cellW / 2
+  for (let i = 0; i < stag.cells.length; i++) {
+    const a = stag.cells[i]
+    assert.ok(a.x >= stag.margins.left - 0.01 && a.x + stag.cellW <= stag.pageW - stag.margins.right + 0.01)
+    assert.ok(a.y >= stag.margins.bottom - 0.01 && a.y + stag.cellH <= stag.pageH - stag.margins.top + 0.01)
+    for (let j = i + 1; j < stag.cells.length; j++) {
+      const b = stag.cells[j]
+      assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 2 * r + cutline.SHEET_GAP_PT - 0.01)
+    }
+  }
+  // Squares and rectangles ignore the request and stay on the grid.
+  const rect = { kind: 'rounded', sheet: 'a3', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('rounded', wPt, hPt), pattern: 'staggered' }
+  assert.equal(stickerLayout(size, rect).pattern, 'grid')
+})
+
+test('rectangle stickers tile without rotating and keep their shape', () => {
+  const size = { w: 90, h: 50, unit: 'mm' }
+  const { wPt, hPt } = sizeToPoints(size)
+  const L = stickerLayout(size, { kind: 'rounded', sheet: 'a4', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('rounded', wPt, hPt), marks: true })
+  near(L.cellW, wPt + 2 * cutline.BLEED_PT)
+  near(L.cellH, hPt + 2 * cutline.BLEED_PT)
+  assert.ok(L.count >= 4)
+  assert.ok(SIZE_PRESETS.some((p) => p.id === 'stickerrect9050'))
+})
+
+test('a marked sheet PDF draws the marks and header in process black', async () => {
+  const image = fs.readFileSync(path.join(__dirname, '..', 'build', 'icon.png'))
+  const size = { w: 50, h: 50, unit: 'mm' }
+  const { wPt, hPt } = sizeToPoints(size)
+  const header = { name: 'ECO GLOBAL PRINTING', label: 'Untuk Tempahan:', phone: '013-712 9937', logo: image, qr: { size: 3, data: [1, 0, 1, 0, 1, 0, 1, 0, 1] } }
+  const cut = { kind: 'circle', sheet: 'a3', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('circle', wPt, hPt), marks: true, header }
+  const doc = await PDFDocument.load(await buildPdf(image, size, 'fill', null, 'rgb', cut))
+  const page = doc.getPage(0)
+  const content = page.node.normalizedEntries().Contents
+  const streams = (content.asArray ? content.asArray() : [content]).map((ref) => doc.context.lookup(ref))
+  const { inflateSync } = require('node:zlib')
+  const text = streams.map((st) => {
+    const raw = Buffer.from(st.getContents())
+    try { return inflateSync(raw).toString('latin1') } catch { return raw.toString('latin1') }
+  }).join('\n')
+  assert.match(text, /0 0 0 1 K/)
+  assert.match(text, /0 0 0 1 k/)
+
+  await assert.rejects(
+    buildPdf(image, size, 'fill', null, 'rgb', { ...cut, header: { ...header, name: '印刷店' } }),
+    /characters the built-in fonts can't print/
+  )
+})
+
+async function headerPdfText (header, sheet = 'a4') {
+  const { buildHeaderProof } = require('../src/core')
+  const doc = await PDFDocument.load(await buildHeaderProof(sheet, header))
+  const page = doc.getPage(0)
+  const content = page.node.normalizedEntries().Contents
+  const streams = (content.asArray ? content.asArray() : [content]).map((ref) => doc.context.lookup(ref))
+  const { inflateSync } = require('node:zlib')
+  return streams.map((st) => {
+    const raw = Buffer.from(st.getContents())
+    try { return inflateSync(raw).toString('latin1') } catch { return raw.toString('latin1') }
+  }).join('\n')
+}
+
+test('header height moves the stickers down and is clamped', () => {
+  const tall = cutline.sheetMargins({ header: true, headerHeightPt: 25 * cutline.MM })
+  const short = cutline.sheetMargins({ header: true, headerHeightPt: 10 * cutline.MM })
+  near(tall.top - short.top, 15 * cutline.MM)
+  near(cutline.clampHeaderHeight(100 * cutline.MM), 30 * cutline.MM)
+  near(cutline.clampHeaderHeight(2 * cutline.MM), 10 * cutline.MM)
+  const box = cutline.headerBox(595, 842, tall, 25 * cutline.MM)
+  near(box.h, 25 * cutline.MM)
+})
+
+test('header layouts, colour and extra lines all reach the PDF', async () => {
+  const base = { name: 'ECO GLOBAL', tagline: 'Siap 1 jam', label: 'Untuk Tempahan:', phone: '013-712 9937', extra: '@ecoglobal', logo: null, qr: { size: 3, data: [1, 0, 1, 0, 1, 0, 1, 0, 1] }, heightPt: 18 * cutline.MM }
+  for (const layout of ['brand-left', 'brand-right', 'brand-centre']) {
+    const text = await headerPdfText({ ...base, layout })
+    assert.match(text, /Tj/)
+  }
+  // Brand colour as RGB; black stays process black.
+  const red = await headerPdfText({ ...base, color: '#cc0000' })
+  assert.match(red, /0\.8 0 0 rg/)
+  const black = await headerPdfText({ ...base, color: '#000000' })
+  assert.match(black, /0 0 0 1 k/)
+  // Times is a different built-in font from Helvetica.
+  const { buildHeaderProof } = require('../src/core')
+  const times = await PDFDocument.load(await buildHeaderProof('a4', { ...base, font: 'times' }))
+  const fonts = times.getPage(0).node.Resources().lookup(PDFName.of('Font'), PDFDict)
+  const names = fonts.values().map((ref) => times.context.lookup(ref).get(PDFName.of('BaseFont')).toString())
+  assert.ok(names.some((n) => /Times/.test(n)), names.join(','))
+})
+
+test('a font file lets the header print non-Latin names', async () => {
+  const candidates = ['/System/Library/Fonts/Supplemental/Arial Unicode.ttf', '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf']
+  const file = candidates.find((f) => fs.existsSync(f))
+  if (!file) return // no CJK font on this machine; covered on the dev Mac
+  const { buildHeaderProof } = require('../src/core')
+  const bytes = await buildHeaderProof('a4', { name: '环球印刷', phone: '013-712 9937', label: '', logo: null, qr: null, fontBytes: fs.readFileSync(file) })
+  assert.ok(bytes.length > 1000)
+})
+
+test('the contour trace and the PDF place the image identically', () => {
+  // Same numbers in, same rectangle out — the cut cannot drift off the art.
+  const r = stickerImageRect(1024, 1536, 100, 150, 'fill', 5)
+  const d = drawRect(1024, 1536, 110, 160, 'fill')
+  near(r.x, d.x - 5)
+  near(r.width, d.width)
+})
+
+test('the brief asks for plain white behind a contour sticker', () => {
+  const aspect = aspectFor(142, 142)
+  assert.match(generateInstruction('a cat', aspect, ['01.png'], 0, 'contour'), /pure white/)
+  assert.match(generateInstruction('a cat', aspect, ['01.png'], 0, 'circle'), /circle/)
+  assert.doesNotMatch(generateInstruction('a cat', aspect, ['01.png']), /sticker/)
+})
+
+test('artwork drawn to the edge is shrunk so its border still fits', () => {
+  const w = 100
+  // A disc touching every edge of the image.
+  const mask = cutline.subjectMask(canvasWithDiscs(w, w, [[50, 50, 50]]), w, w)
+  const rect = { x: 0, y: 0, width: 100, height: 100 }
+  const { rect: placed, scale } = cutline.fitContourRect({ mask, width: w, height: w }, rect, 5, { w: 100, h: 100 })
+  assert.ok(scale < 1)
+  const { path } = cutline.contourCutPath({ mask, width: w, height: w }, placed, 5, { w: 100, h: 100 })
+  const xs = path.filter((c) => c[0] !== 'Z').map((c) => c[1])
+  assert.ok(Math.min(...xs) > -0.01 && Math.max(...xs) < 100.01)
+  // Untouched when it already fits.
+  const small = cutline.subjectMask(canvasWithDiscs(w, w, [[50, 50, 20]]), w, w)
+  assert.equal(cutline.fitContourRect({ mask: small, width: w, height: w }, rect, 5, { w: 100, h: 100 }).scale, 1)
 })
 
 // --- Runner ----------------------------------------------------------------

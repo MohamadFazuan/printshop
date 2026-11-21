@@ -10,11 +10,14 @@
   "scripts": {
     "start": "electron .",
     "verify": "node test/verify.js",
+    "fetch-upscaler": "node scripts/fetch-upscaler.js",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win"
   },
   "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
     "pdf-lib": "^1.17.1",
+    "qrcode": "^1.5.4",
     "sharp": "^0.35.3"
   },
   "devDependencies": {
@@ -31,6 +34,12 @@
     "files": [
       "src/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/upscaler/${os}",
+        "to": "upscaler"
+      }
     ],
     "mac": {
       "category": "public.app-category.graphics-design",

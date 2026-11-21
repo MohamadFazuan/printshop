@@ -97,11 +97,15 @@ Two things the app does about that, both learned the hard way:
 |---|---|
 | ✍️ **Prompt** | What to draw. Plain description works; art-direction language works better. |
 | 🖼️ **Reference images** | Optional, up to 4. Attach, drag onto the form, or paste (⌘V / Ctrl+V — a screenshot works) PNG, JPEG or WebP images, and the artwork takes its subject, style, colour and composition from them. Your page's shape still wins over the references'. |
-| 📏 **Size** | 59 presets — ISO A0–A7, ISO B0–B5, US, photo, cards, stationery, stickers & labels, large format, signage, apparel & merch, square — or **Custom** in `mm / cm / in / ft / px`. |
+| 📏 **Size** | 65 presets — ISO A0–A7, ISO B0–B5, US, photo, cards, stationery, stickers & labels, large format, signage, apparel & merch, square — or **Custom** in `mm / cm / in / ft / px`. |
 | 🔄 **Landscape** | Swaps width and height. |
 | 🔢 **DPI** | Converts `px` custom sizes and drives the resolution readout. 300 is the print default. |
 | 🎲 **Variants** | How many images to generate at once, 1–4. Each is a separate render, so each takes its own time. |
 | 🖇️ **Fit** | *Fill page* crops the overflow; *Fit with margin* keeps the whole image and leaves white. |
+| ✂️ **Cut line** | For stickers (mirrorkote, vinyl, any die- or kiss-cut stock). *Contour* tells Codex to draw the design on plain white, then traces its outline with a 1, 2 or 3 mm white border. If the art runs to the edge it is shrunk until that border fits. *Rectangle*, *Rounded rectangle* and *Circle / oval* cut on the trim, with 2 mm of bleed. The cut is a 0.25 pt stroke in a spot colour named `CutContour`, the name VersaWorks, Mimaki, Summa, Graphtec Cutting Master and Flexi look for. A preview shows the line on the selected variant before you export. PDF only. |
+| 🗂️ **Layout** | With a cut line: *Single sticker*, or an *A4*, *A3* or *A3+* sheet tiled with as many as fit, with 4 mm gaps. The sheet turns landscape when that fits more. |
+| ➕ **On the sheet** | *Cutting marks* (on by default): four process-black marks for an optical-sensor cutter, an L at each bottom corner and a bar with an inward tick halfway up each side, 20 mm arms, 1 mm line, 10 mm from the paper edge by default — set *mm from edge* (3–40 mm) to match your cutter; the stickers move with the marks, so the count on the sheet updates. Stickers keep 5 mm clear of them. *Pattern* (round and oval cuts): *Grid*, or *Staggered* — every other row shifted half a sticker and nested in, as on die-cut round sheets, which often fits more. *Shop header*: across the top margin, set in **Settings → Sticker sheet header** — shop name and tagline, logo, order label, phone and an extra line (address, Instagram), and a QR code drawn as vector. Choose the layout (name left, name right, or name centred), height (10–30 mm), name and contact size (%), text colour (pure black stays K-only; the QR is always black) and font: Helvetica, Times, Courier, or your own .ttf/.otf file, which is what Chinese, Tamil or Jawi text needs. **Test print header** opens a blank sheet with the marks and header, using what is typed, before you save. |
+| 🔍 **Resolution** | *AI upscale* (default) runs Real-ESRGAN on your graphics chip to add real detail until the page reaches the DPI its size wants — A4 goes from ~128 to 300 DPI. Capped at 4×, so a big banner improves but may still fall short. A few minutes the first time per variant and size; repeat exports reuse it. *Original* exports the render as it came. |
 | 💾 **Format** | PDF, PNG, JPEG or TIFF. Raster exports are rendered at the page size for your DPI — A4 at 300 gives 2480 × 3508. |
 | 🎨 **Colour** | RGB or CMYK. CMYK needs a profile (below) and is unavailable for PNG. |
 | 💧 **Watermark** | Off / On plus the text. Tiled diagonally across the whole page — harder to crop off than a corner mark. Vector text in PDFs, composited into raster exports. |
@@ -151,6 +155,7 @@ The log is Codex's own event stream (`codex exec --json`), so a stall shows its 
   red-mountain-poster-a1b2-A4.pdf           export: RGB, no watermark
   red-mountain-poster-a1b2-A4-PROOF.pdf     export: watermarked
   red-mountain-poster-a1b2-A4-CMYK.tiff     export: CMYK separation
+  red-mountain-poster-a1b2-Sticker5050mm-CUT-A3SHEET-MARKS.pdf   sticker sheet with cut lines + cutting marks
 ```
 
 Filenames carry the colour space and watermark, so a proof can never quietly overwrite the press-ready file. An export that would land on an existing name gets `-2`, `-3` instead of replacing it. Change the output folder in Settings. **Nothing is ever deleted.** 🗄️
@@ -161,6 +166,7 @@ Filenames carry the colour space and watermark, so a proof can never quietly ove
 
 ```bash
 npm install
+npm run fetch-upscaler  # Real-ESRGAN into vendor/ (~50 MB, SHA-256 checked); skip it and AI upscale is hidden
 npm start       # run the app
 npm run verify  # headless checks on size, aspect, PDF and brief logic — no network
 ```
@@ -195,6 +201,7 @@ node build/make-icon.js
 ```
 src/core.js              units, presets, aspect maths, the Codex brief,
                          PDF geometry — pure, no Electron, fully tested
+src/cutline.js           cut lines: contour trace, shapes, sheet tiling — pure, tested
 src/main.js              Codex process, file writes, IPC — all privileged code
 src/preload.js           the entire renderer↔main surface
 src/renderer/            UI; no filesystem, no network
@@ -208,4 +215,4 @@ Sizes live in one table in `src/core.js`, declared in their native unit — **ad
 
 ## 🚧 Limits
 
-No bleed or crop marks, no multi-page documents, no job history browser, no auto-update. Resolution is capped by what the image model spends, so large-format work is a starting point rather than a finished file. Generated artwork is subject to OpenAI's usage policies; a rejected prompt surfaces their message verbatim.
+No crop marks, no registration marks except the optional cutting marks on sticker sheets, and no bleed except on sticker cuts, no multi-page documents, no job history browser, no auto-update. Resolution starts at what the image model spends (~1.5 MP); AI upscale lifts that up to 4×, which covers paper sizes but leaves large-format work a starting point rather than a finished file. Generated artwork is subject to OpenAI's usage policies; a rejected prompt surfaces their message verbatim.

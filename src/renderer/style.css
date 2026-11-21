@@ -313,3 +313,19 @@ input:not([type="checkbox"]):not([type="radio"]), select { height: 36px; }
 .compose .actions { flex-direction: column-reverse; align-items: stretch; gap: 8px; margin-top: 8px; }
 .compose .actions button { padding: 11px 16px; font-weight: 600; }
 .compose .actions output { font-size: 12px; text-align: center; }
+.upscale-note { display: block; margin: -4px 0 12px; max-width: 560px; }
+
+/* Cut line preview: the selected variant on one sticker's bleed box. */
+.cut-preview { margin: 12px 0 0; display: flex; gap: 12px; align-items: center; }
+.cut-preview svg { width: 160px; height: 160px; flex: none; border-radius: 6px; background: var(--panel); }
+.cut-preview .paper { fill: #fff; }
+.cut-preview .trim { fill: none; stroke: #888; stroke-width: 0.4; stroke-dasharray: 2 1.5; }
+.cut-preview .cut { fill: none; stroke: #e0007a; stroke-width: 0.9; stroke-linejoin: round; }
+.cut-preview figcaption { flex: 1; }
+.cut-preview figcaption.warn { color: var(--warn, #a15c00); }
+
+.cut-preview .sheet-preview { width: 150px; height: 212px; background: none; }
+.cut-preview .mark { fill: none; stroke: #111; stroke-width: 2.83; }
+.cut-preview .header-box { fill: #e6e6e2; }
+.small-head { font-size: 13px; margin: 18px 0 4px; }
+.radio.inset input { width: 56px; }

@@ -3,7 +3,14 @@
 // Everything here is pure and Electron-free so it can be exercised headlessly
 // by test/verify.js. Anything privileged (fs, net, keys, IPC) lives in main.js.
 
-const { PDFDocument, StandardFonts, degrees, rgb, cmyk } = require('pdf-lib')
+const {
+  PDFDocument, StandardFonts, degrees, rgb, cmyk,
+  PDFName, PDFDict, PDFNumber, PDFOperator, PDFOperatorNames,
+  pushGraphicsState, popGraphicsState, rectangle, clip: clipPath, endPath,
+  moveTo, lineTo, appendBezierCurve, closePath, stroke, setLineWidth, setGraphicsState,
+  setLineJoin, setLineCap, LineJoinStyle, LineCapStyle, setStrokingColor, setFillingColor, fill
+} = require('pdf-lib')
+const { sheetLayout, sheetMargins, sheetMarks, headerBox, shapeCutPath, MARK_INSET_PT, MARK_WIDTH_PT, MM, cutBrief } = require('./cutline')
 
 const EXPORT_FORMATS = ['pdf', 'png', 'jpeg', 'tiff']
 const COLOUR_SPACES = ['rgb', 'cmyk']
@@ -65,7 +72,13 @@ const SIZE_PRESETS = [
   { id: 'sticker50', group: 'Stickers & labels', label: 'Sticker 50 × 50 mm', w: 50, h: 50, unit: 'mm' },
   { id: 'sticker75', group: 'Stickers & labels', label: 'Sticker 75 × 75 mm', w: 75, h: 75, unit: 'mm' },
   // A round sticker is cut from a square — artwork is generated to the bounding box.
+  { id: 'stickerround40', group: 'Stickers & labels', label: 'Round sticker ⌀ 40 mm', w: 40, h: 40, unit: 'mm' },
+  { id: 'stickerround50', group: 'Stickers & labels', label: 'Round sticker ⌀ 50 mm', w: 50, h: 50, unit: 'mm' },
   { id: 'stickerround60', group: 'Stickers & labels', label: 'Round sticker ⌀ 60 mm', w: 60, h: 60, unit: 'mm' },
+  { id: 'stickeroval7050', group: 'Stickers & labels', label: 'Oval sticker 70 × 50 mm', w: 70, h: 50, unit: 'mm' },
+  { id: 'stickerrect6040', group: 'Stickers & labels', label: 'Rectangle sticker 60 × 40 mm', w: 60, h: 40, unit: 'mm' },
+  { id: 'stickerrect9050', group: 'Stickers & labels', label: 'Rectangle sticker 90 × 50 mm', w: 90, h: 50, unit: 'mm' },
+  { id: 'stickerrect10070', group: 'Stickers & labels', label: 'Rectangle sticker 100 × 70 mm', w: 100, h: 70, unit: 'mm' },
   { id: 'label100x150', group: 'Stickers & labels', label: 'Shipping label 100 × 150 mm', w: 100, h: 150, unit: 'mm' },
   { id: 'bumper', group: 'Stickers & labels', label: 'Bumper sticker 300 × 75 mm', w: 300, h: 75, unit: 'mm' },
   { id: 'a2', group: 'Large format', label: 'A2', w: 420, h: 594, unit: 'mm' },
@@ -175,7 +188,7 @@ function aspectStrain (wPt, hPt, imgW, imgH) {
 //
 // Named files rather than a count, because a retry must fill only the gaps —
 // asking again for "4 images" would overwrite the ones that already succeeded.
-function generateInstruction (prompt, aspect, names, references = 0) {
+function generateInstruction (prompt, aspect, names, references = 0, cut = 'none') {
   const many = names.length > 1
   // Older callers passed a boolean; true still means one reference.
   const refCount = references === true ? 1 : Math.max(0, Number(references) || 0)
@@ -202,6 +215,9 @@ function generateInstruction (prompt, aspect, names, references = 0) {
           `Do not save, copy or reproduce the reference file${refs ? 's' : ''} into the folder.`
         ]
       : []),
+    // A cut line only works if the artwork was drawn for it — a contour needs
+    // the subject on plain white, a shape cut needs art to the edges.
+    ...cutBrief(cut),
     `Save the result${many ? 's' : ''} in the current working directory as ${names.join(', ')}.`,
     'Overwrite nothing else in that folder. Create no other files. Reply with only the word DONE.',
     '',
@@ -320,35 +336,367 @@ function watermarkSvg (width, height, text, opacity = 0.25) {
     `fill="#808080" fill-opacity="${opacity}">${nodes}</g></svg>`
 }
 
-async function buildPdf (imageBytes, size, fitMode, watermark = null, colour = 'rgb') {
+function drawWatermark (page, font, watermark, colour, pageW, pageH) {
+  const fontSize = Math.max(10, Math.min(pageW, pageH) / 16)
+  const textWidth = font.widthOfTextAtSize(watermark.text, fontSize)
+  // Keep the mark in the page's own colour space so the RIP has nothing to convert.
+  const ink = colour === 'cmyk' ? cmyk(0, 0, 0, 0.5) : rgb(0.5, 0.5, 0.5)
+
+  for (const { x, y } of watermarkTiles(pageW, pageH, textWidth, fontSize)) {
+    page.drawText(watermark.text, {
+      x,
+      y,
+      size: fontSize,
+      font,
+      color: ink,
+      opacity: watermark.opacity ?? 0.25,
+      rotate: degrees(-45)
+    })
+  }
+}
+
+async function buildPdf (imageBytes, size, fitMode, watermark = null, colour = 'rgb', cut = null) {
+  if (cut) return buildStickerPdf(imageBytes, size, fitMode, watermark, colour, cut)
   const { wPt, hPt } = sizeToPoints(size)
 
   const pdf = await PDFDocument.create()
-  const isPng = imageBytes[0] === 0x89 && imageBytes[1] === 0x50
-  const image = isPng ? await pdf.embedPng(imageBytes) : await pdf.embedJpg(imageBytes)
+  const image = await embedImage(pdf, imageBytes)
   const page = pdf.addPage([wPt, hPt])
 
   page.drawImage(image, drawRect(image.width, image.height, wPt, hPt, fitMode))
 
   if (watermark && watermark.text) {
-    const font = await pdf.embedFont(StandardFonts.HelveticaBold)
-    const fontSize = Math.max(10, Math.min(wPt, hPt) / 16)
-    const textWidth = font.widthOfTextAtSize(watermark.text, fontSize)
-    // Keep the mark in the page's own colour space so the RIP has nothing to convert.
-    const ink = colour === 'cmyk' ? cmyk(0, 0, 0, 0.5) : rgb(0.5, 0.5, 0.5)
-
-    for (const { x, y } of watermarkTiles(wPt, hPt, textWidth, fontSize)) {
-      page.drawText(watermark.text, {
-        x,
-        y,
-        size: fontSize,
-        font,
-        color: ink,
-        opacity: watermark.opacity ?? 0.25,
-        rotate: degrees(-45)
-      })
-    }
+    drawWatermark(page, await pdf.embedFont(StandardFonts.HelveticaBold), watermark, colour, wPt, hPt)
   }
+
+  return pdf.save()
+}
+
+function embedImage (pdf, bytes) {
+  const isPng = bytes[0] === 0x89 && bytes[1] === 0x50
+  return isPng ? pdf.embedPng(bytes) : pdf.embedJpg(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Stickers. The artwork covers the bleed box (trim plus bleed on every side);
+// the cut sits on the trim, or around the artwork for a contour cut.
+// ---------------------------------------------------------------------------
+
+// Where the image lands on one sticker, relative to the trim box's bottom-left.
+// The contour trace and the PDF both use this, so the cut lines up exactly.
+function stickerImageRect (imgW, imgH, wPt, hPt, fitMode, bleedPt) {
+  const r = drawRect(imgW, imgH, wPt + 2 * bleedPt, hPt + 2 * bleedPt, fitMode)
+  return { x: r.x - bleedPt, y: r.y - bleedPt, width: r.width, height: r.height }
+}
+
+// Single sticker, or the sheet it is tiled on. Pure, so the UI can say how
+// many fit before anything is exported.
+function stickerLayout (size, cut) {
+  const { wPt, hPt } = sizeToPoints(size)
+  const cellW = wPt + 2 * cut.bleedPt
+  const cellH = hPt + 2 * cut.bleedPt
+  if (!cut.sheet || cut.sheet === 'single') {
+    return { pageW: cellW, pageH: cellH, cols: 1, rows: 1, count: 1, cells: [{ x: 0, y: 0 }], wPt, hPt, cellW, cellH, marks: [], header: null }
+  }
+  const insetPt = cut.markInsetPt ?? MARK_INSET_PT
+  const headerHeightPt = cut.header?.heightPt
+  const margins = sheetMargins({ marks: Boolean(cut.marks), header: Boolean(cut.header), insetPt, headerHeightPt })
+  // Staggering only makes sense for round cuts; anything else stays on the grid.
+  const pattern = cut.pattern === 'staggered' && cut.kind === 'circle' ? 'staggered' : 'grid'
+  const layout = sheetLayout(cellW, cellH, cut.sheet, { margins, pattern })
+  return {
+    ...layout,
+    wPt,
+    hPt,
+    cellW,
+    cellH,
+    marks: cut.marks ? sheetMarks(layout.pageW, layout.pageH, insetPt) : [],
+    header: cut.header ? headerBox(layout.pageW, layout.pageH, margins, headerHeightPt) : null
+  }
+}
+
+// A Separation colour space named CutContour, shown as 100% magenta. The name
+// is what the cutter software keys on; the magenta is only how it looks on
+// screen. Overprint is on so the line never knocks a hole in the artwork if a
+// RIP prints it by mistake.
+// Process black only (K 100): an optical sensor reads it best, and it never
+// prints as a four-colour smear when slightly off register.
+const MARK_INK = cmyk(0, 0, 0, 1)
+
+function drawRegistrationMarks (page, polylines) {
+  page.pushOperators(
+    pushGraphicsState(),
+    setStrokingColor(MARK_INK),
+    setLineWidth(MARK_WIDTH_PT),
+    setLineJoin(LineJoinStyle.Miter),
+    setLineCap(LineCapStyle.Projecting)
+  )
+  for (const line of polylines) {
+    page.pushOperators(moveTo(line[0][0], line[0][1]))
+    for (const [x, y] of line.slice(1)) page.pushOperators(lineTo(x, y))
+  }
+  page.pushOperators(stroke(), popGraphicsState())
+}
+
+const HEADER_LAYOUTS = ['brand-left', 'brand-right', 'brand-centre']
+const HEADER_FONTS = {
+  helvetica: [StandardFonts.Helvetica, StandardFonts.HelveticaBold],
+  times: [StandardFonts.TimesRoman, StandardFonts.TimesRomanBold],
+  courier: [StandardFonts.Courier, StandardFonts.CourierBold]
+}
+
+// '#rrggbb' to a PDF colour. Pure black stays K 100 so it never prints as
+// four inks; any other colour goes in as RGB for the RIP to separate.
+function headerInk (hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || '').trim())
+  if (!m) return MARK_INK
+  const n = parseInt(m[1], 16)
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+  if (r === 0 && g === 0 && b === 0) return MARK_INK
+  return rgb(r / 255, g / 255, b / 255)
+}
+
+// Standard PDF fonts only encode Latin-1; say so instead of failing deep in pdf-lib.
+function headerText (font, text, field, custom) {
+  const clean = String(text || '').trim()
+  if (!clean || custom) return clean
+  try {
+    font.encodeText(clean)
+  } catch {
+    throw new Error(`The sheet header's ${field} uses characters the built-in fonts can't print. Choose a font file (.ttf/.otf) that has them in Settings, or put the text in the logo image.`)
+  }
+  return clean
+}
+
+function fitSize (font, text, want, maxW) {
+  if (!text) return want
+  const w = font.widthOfTextAtSize(text, want)
+  return w > maxW ? want * maxW / w : want
+}
+
+// Lines stacked and centred in a box of height h. Each line: { text, font, size }.
+// Returns baselines (y from box bottom) for each line.
+function stackLines (lines, h) {
+  const gap = (l) => l.size * 0.3
+  const total = lines.reduce((a, l, i) => a + l.size * 0.74 + (i ? gap(l) : 0), 0)
+  let y = (h + total) / 2
+  return lines.map((l, i) => {
+    if (i) y -= gap(l)
+    y -= l.size * 0.74
+    return y
+  })
+}
+
+// Shop header across the top margin. Three blocks — brand (logo, name,
+// tagline), QR code and contact (label, phone, extra line) — arranged by
+// header.layout. Every size is a share of the strip height, scaled by the
+// shop's own percentages, then shrunk only if it would not fit.
+// header: { name, tagline, label, phone, extra, logo, qr, layout, nameScale,
+//           contactScale, color, font: 'helvetica'|'times'|'courier', fontBytes }
+async function drawSheetHeader (pdf, page, box, header) {
+  let regular
+  let bold
+  const custom = Boolean(header.fontBytes)
+  if (custom) {
+    pdf.registerFontkit(require('@pdf-lib/fontkit'))
+    regular = bold = await pdf.embedFont(header.fontBytes, { subset: true })
+  } else {
+    const [r, b] = HEADER_FONTS[header.font] || HEADER_FONTS.helvetica
+    regular = await pdf.embedFont(r)
+    bold = await pdf.embedFont(b)
+  }
+  const ink = headerInk(header.color)
+  const layout = HEADER_LAYOUTS.includes(header.layout) ? header.layout : 'brand-left'
+  const nameScale = Math.min(2, Math.max(0.3, (Number(header.nameScale) || 100) / 100))
+  const contactScale = Math.min(2, Math.max(0.3, (Number(header.contactScale) || 100) / 100))
+
+  const name = headerText(bold, header.name, 'shop name', custom)
+  const tagline = headerText(regular, header.tagline, 'tagline', custom)
+  const label = headerText(regular, header.label, 'order label', custom)
+  const phone = headerText(bold, header.phone, 'phone number', custom)
+  const extra = headerText(regular, header.extra, 'extra line', custom)
+  const gap = 3 * MM
+  const h = box.h
+
+  // Contact block: up to three lines, sized to share the strip height.
+  const contact = [
+    label && { text: label, font: regular, size: h * 0.22 },
+    phone && { text: phone, font: bold, size: h * 0.4 },
+    extra && { text: extra, font: regular, size: h * 0.2 }
+  ].filter(Boolean)
+  const contactRaw = contact.reduce((a, l) => a + l.size * 0.92, 0)
+  const contactFit = contactRaw ? Math.min(1, (h * 0.96) / contactRaw) : 1
+  for (const l of contact) l.size = fitSize(l.font, l.text, l.size * contactFit * contactScale, box.w * 0.4)
+  // Never taller than the strip, whatever the percentage says.
+  const contactH = contact.reduce((a, l, i) => a + l.size * 0.74 + (i ? l.size * 0.3 : 0), 0)
+  if (contactH > h) for (const l of contact) l.size *= h / contactH
+  const contactW = contact.length ? Math.max(...contact.map((l) => l.font.widthOfTextAtSize(l.text, l.size))) : 0
+
+  const qrW = header.qr && header.qr.size ? h : 0
+  let logo = null
+  let logoW = 0
+  if (header.logo) {
+    logo = await embedImage(pdf, header.logo)
+    logoW = Math.min(h * logo.width / logo.height, box.w * 0.3)
+  }
+
+  // Horizontal slots for each block, per layout.
+  const right = box.x + box.w
+  const slots = {}
+  const sideW = qrW + (qrW && contactW ? gap : 0) + contactW
+  if (layout === 'brand-left') {
+    slots.contact = { x: right - contactW, align: 'right' }
+    slots.qr = { x: right - sideW }
+    slots.brand = { x: box.x, w: box.w - sideW - (sideW ? gap * 2 : 0), align: 'left' }
+  } else if (layout === 'brand-right') {
+    slots.qr = { x: box.x }
+    slots.contact = { x: box.x + qrW + (qrW ? gap : 0), align: 'left' }
+    slots.brand = { x: box.x + sideW + (sideW ? gap * 2 : 0), w: box.w - sideW - (sideW ? gap * 2 : 0), align: 'right' }
+  } else {
+    slots.qr = { x: box.x }
+    slots.contact = { x: right - contactW, align: 'right' }
+    const side = Math.max(qrW, contactW) + gap * 2
+    slots.brand = { x: box.x + side, w: box.w - side * 2, align: 'centre' }
+  }
+
+  // Contact text.
+  const baselines = stackLines(contact, h)
+  contact.forEach((l, i) => {
+    const w = l.font.widthOfTextAtSize(l.text, l.size)
+    const x = slots.contact.align === 'right' ? slots.contact.x + contactW - w : slots.contact.x
+    page.drawText(l.text, { x, y: box.y + baselines[i], size: l.size, font: l.font, color: ink })
+  })
+
+  // QR as vector squares, so it scans crisply at any print resolution. Always
+  // black: a pale brand colour can make a code unreadable.
+  if (qrW) {
+    const n = header.qr.size
+    const cell = qrW / n
+    page.pushOperators(pushGraphicsState(), setFillingColor(MARK_INK))
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        if (header.qr.data[r * n + c]) page.pushOperators(rectangle(slots.qr.x + c * cell, box.y + (n - 1 - r) * cell, cell + 0.05, cell + 0.05))
+      }
+    }
+    page.pushOperators(fill(), popGraphicsState())
+  }
+
+  // Brand block: logo then name over tagline, fitted into its slot.
+  const brand = slots.brand
+  const textRoom = Math.max(0, brand.w - (logo ? logoW + gap : 0))
+  const lines = [
+    name && { text: name, font: bold, size: h * (tagline ? 0.5 : 0.62) * nameScale },
+    tagline && { text: tagline, font: regular, size: h * 0.24 * nameScale }
+  ].filter(Boolean)
+  for (const l of lines) l.size = fitSize(l.font, l.text, l.size, textRoom)
+  const linesH = lines.reduce((a, l, i) => a + l.size * 0.74 + (i ? l.size * 0.3 : 0), 0)
+  if (linesH > h) for (const l of lines) l.size *= h / linesH
+  const textW = lines.length && textRoom > 0 ? Math.max(...lines.map((l) => l.font.widthOfTextAtSize(l.text, l.size))) : 0
+  const blockW = (logo ? logoW : 0) + (logo && textW ? gap : 0) + textW
+  let x = brand.align === 'left' ? brand.x : brand.align === 'right' ? brand.x + brand.w - blockW : brand.x + (brand.w - blockW) / 2
+  if (logo) {
+    const lh = logoW * logo.height / logo.width
+    page.drawImage(logo, { x, y: box.y + (h - lh) / 2, width: logoW, height: lh })
+    x += logoW + gap
+  }
+  if (textW) {
+    const ys = stackLines(lines, h)
+    lines.forEach((l, i) => {
+      const w = l.font.widthOfTextAtSize(l.text, l.size)
+      const lx = brand.align === 'right' ? x + textW - w : brand.align === 'centre' ? x + (textW - w) / 2 : x
+      page.drawText(l.text, { x: lx, y: box.y + ys[i], size: l.size, font: l.font, color: ink })
+    })
+  }
+}
+
+// A blank sheet with only the marks and header, to check the header before a run.
+async function buildHeaderProof (sheetKey, header, { marks = true, insetPt } = {}) {
+  const { SHEETS } = require('./cutline')
+  const sheet = SHEETS[sheetKey] || SHEETS.a4
+  const margins = sheetMargins({ marks, header: true, insetPt, headerHeightPt: header.heightPt })
+  const pdf = await PDFDocument.create()
+  const page = pdf.addPage([sheet.w, sheet.h])
+  await drawSheetHeader(pdf, page, headerBox(sheet.w, sheet.h, margins, header.heightPt), header)
+  if (marks) drawRegistrationMarks(page, sheetMarks(sheet.w, sheet.h, insetPt))
+  // Show where stickers will start.
+  page.drawRectangle({
+    x: margins.left,
+    y: margins.bottom,
+    width: sheet.w - margins.left - margins.right,
+    height: sheet.h - margins.top - margins.bottom,
+    borderColor: rgb(0.75, 0.75, 0.75),
+    borderWidth: 0.5,
+    borderDashArray: [4, 4]
+  })
+  return pdf.save()
+}
+
+function addCutContourInk (pdf, page) {
+  const ctx = pdf.context
+  const tint = ctx.register(ctx.obj({ FunctionType: 2, Domain: [0, 1], C0: [0, 0, 0, 0], C1: [0, 1, 0, 0], N: 1 }))
+  const space = ctx.register(ctx.obj([PDFName.of('Separation'), PDFName.of('CutContour'), PDFName.of('DeviceCMYK'), tint]))
+  const { Resources } = page.node.normalizedEntries()
+  const spaces = Resources.lookupMaybe(PDFName.of('ColorSpace'), PDFDict) || ctx.obj({})
+  spaces.set(PDFName.of('CutContour'), space)
+  Resources.set(PDFName.of('ColorSpace'), spaces)
+  return page.node.newExtGState('GS', ctx.register(ctx.obj({ Type: 'ExtGState', OP: true, op: true, OPM: 1 })))
+}
+
+function pathOperators (path, dx, dy) {
+  return path.map((cmd) => {
+    if (cmd[0] === 'M') return moveTo(cmd[1] + dx, cmd[2] + dy)
+    if (cmd[0] === 'L') return lineTo(cmd[1] + dx, cmd[2] + dy)
+    if (cmd[0] === 'C') return appendBezierCurve(cmd[1] + dx, cmd[2] + dy, cmd[3] + dx, cmd[4] + dy, cmd[5] + dx, cmd[6] + dy)
+    return closePath()
+  })
+}
+
+const CUT_LINE_WIDTH_PT = 0.25
+
+async function buildStickerPdf (imageBytes, size, fitMode, watermark, colour, cut) {
+  const layout = stickerLayout(size, cut)
+  const { wPt, hPt, cellW, cellH } = layout
+  const b = cut.bleedPt
+
+  const pdf = await PDFDocument.create()
+  const image = await embedImage(pdf, imageBytes)
+  const page = pdf.addPage([layout.pageW, layout.pageH])
+  if (layout.count === 1) {
+    // Lets imposition software find the finished size without guessing.
+    page.setBleedBox(0, 0, cellW, cellH)
+    page.setTrimBox(b, b, wPt, hPt)
+  }
+
+  // A contour cut may have shrunk the art to fit its border; use that placement.
+  const rect = cut.imageRect || stickerImageRect(image.width, image.height, wPt, hPt, fitMode, b)
+  for (const cell of layout.cells) {
+    // Clip to this sticker's bleed box, so a Fill overflow never lands on its
+    // neighbour. Staggered rows nest into each other, so there the bleed is round.
+    const bleedClip = layout.pattern === 'staggered'
+      ? pathOperators(shapeCutPath('circle', cellW, cellH), cell.x, cell.y)
+      : [rectangle(cell.x, cell.y, cellW, cellH)]
+    page.pushOperators(pushGraphicsState(), ...bleedClip, clipPath(), endPath())
+    page.drawImage(image, { x: cell.x + b + rect.x, y: cell.y + b + rect.y, width: rect.width, height: rect.height })
+    page.pushOperators(popGraphicsState())
+  }
+
+  if (watermark && watermark.text) {
+    drawWatermark(page, await pdf.embedFont(StandardFonts.HelveticaBold), watermark, colour, layout.pageW, layout.pageH)
+  }
+
+  const gs = addCutContourInk(pdf, page)
+  page.pushOperators(
+    pushGraphicsState(),
+    setGraphicsState(gs),
+    PDFOperator.of(PDFOperatorNames.StrokingColorspace, [PDFName.of('CutContour')]),
+    PDFOperator.of(PDFOperatorNames.StrokingColorN, [PDFNumber.of(1)]),
+    setLineWidth(CUT_LINE_WIDTH_PT)
+  )
+  for (const cell of layout.cells) page.pushOperators(...pathOperators(cut.path, cell.x + b, cell.y + b))
+  page.pushOperators(stroke(), popGraphicsState())
+
+  if (layout.marks.length) drawRegistrationMarks(page, layout.marks)
+  if (layout.header && cut.header) await drawSheetHeader(pdf, page, layout.header, cut.header)
 
   return pdf.save()
 }
@@ -379,7 +727,39 @@ function pixelCanvas (wPt, hPt, dpi) {
   }
 }
 
+// How far to upscale a render so it reaches the DPI its page size wants.
+// Real-ESRGAN only does 4×, so that is the ceiling — a big banner may still
+// fall short, but by far less. Below ~5% gain the wait is not worth it.
+const UPSCALE_MAX = 4
+
+function upscalePlan (srcW, srcH, wPt, hPt, fitMode = 'fill') {
+  const ptPerPx = fitMode === 'fit'
+    ? Math.min(wPt / srcW, hPt / srcH)
+    : Math.max(wPt / srcW, hPt / srcH)
+  const dpi = 72 / ptPerPx
+  const { want } = dpiAdvice(wPt, hPt, dpi)
+  const factor = Math.min(UPSCALE_MAX, want / dpi)
+  if (factor <= 1.05) return { needed: false, dpi: Math.round(dpi), want }
+  return {
+    needed: true,
+    factor,
+    width: Math.round(srcW * factor),
+    height: Math.round(srcH * factor),
+    dpi: Math.round(dpi),
+    reachedDpi: Math.round(dpi * factor),
+    want
+  }
+}
+
 module.exports = {
+  stickerImageRect,
+  buildHeaderProof,
+  HEADER_LAYOUTS,
+  HEADER_FONTS,
+  stickerLayout,
+  CUT_LINE_WIDTH_PT,
+  upscalePlan,
+  UPSCALE_MAX,
   EXPORT_FORMATS,
   COLOUR_SPACES,
   CMYK_CAPABLE,

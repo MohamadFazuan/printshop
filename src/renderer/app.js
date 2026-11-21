@@ -10,6 +10,8 @@ let selectedFile = null
 let selectedIndex = 0
 let promptBeforeCodex = null
 let codexFound = null
+let upscaleAvailable = false
+let exporting = false
 let references = []
 const MAX_REFERENCES = 4
 
@@ -88,9 +90,143 @@ function watermark () {
   return { text, opacity: 0.25 }
 }
 
+function cutOptions () {
+  const kind = $('cutKind').value
+  if (!kind || kind === 'none') return null
+  return {
+    kind,
+    offsetMm: Number($('cutOffset').value),
+    sheet: $('sheet').value,
+    marks: $('sheetMarks').checked,
+    markInsetMm: markInsetMm(),
+    header: $('sheetHeader').checked,
+    pattern: kind === 'circle' ? $('sheetPattern').value : 'grid'
+  }
+}
+
+// Distance of the cutting marks from the paper edge, clamped to what the app allows.
+function markInsetMm () {
+  const limits = catalog?.markInset || { defaultMm: 10, minMm: 3, maxMm: 40 }
+  const value = Number($('markInset').value)
+  if (!Number.isFinite(value) || $('markInset').value === '') return limits.defaultMm
+  return Math.min(limits.maxMm, Math.max(limits.minMm, value))
+}
+
+// A cut line is a vector path in a spot colour, so only PDF can carry it.
+function refreshCut () {
+  const cut = cutOptions()
+  $('cutOffsetField').hidden = cut?.kind !== 'contour'
+  $('sheetField').hidden = !cut
+  $('sheetExtrasField').hidden = !cut || cut.sheet === 'single'
+  $('patternField').hidden = !cut || cut.sheet === 'single' || cut.kind !== 'circle'
+  $('markInset').disabled = !$('sheetMarks').checked
+  for (const radio of document.querySelectorAll('input[name="format"]')) {
+    radio.disabled = Boolean(cut) && radio.value !== 'pdf'
+  }
+  if (cut && picked('format') !== 'pdf') document.querySelector('input[name="format"][value="pdf"]').checked = true
+
+  const note = $('cutNote')
+  if (!cut) {
+    note.hidden = true
+  } else {
+    note.textContent = cut.kind === 'contour'
+      ? `Codex draws the design on plain white; export traces its outline with a ${cut.offsetMm} mm white border. ` +
+        'The cut is a CutContour spot-colour line in the PDF, which cutter software reads.'
+      : 'Artwork runs 2 mm past the cut (bleed), so a blade landing slightly off leaves no white edge. ' +
+        'The cut is a CutContour spot-colour line in the PDF.'
+    note.hidden = false
+  }
+}
+
+// Shows the cut on the selected variant before anything is exported — a
+// contour is traced, so it is worth seeing.
+let previewToken = 0
+async function updateCutPreview () {
+  const figure = $('cutPreview')
+  const cut = cutOptions()
+  if (!cut || !selectedFile || !lastJob) {
+    figure.hidden = true
+    return
+  }
+  const token = ++previewToken
+  const caption = $('cutCaption')
+  caption.textContent = cut.kind === 'contour' ? 'Tracing the outline…' : ''
+  figure.hidden = false
+
+  const result = await api.cutPreview({ file: selectedFile, size: currentSize(), fitMode: fitMode(), cut })
+  if (token !== previewToken) return
+  const svg = $('cutSvg')
+  svg.replaceChildren()
+  $('sheetSvg').replaceChildren()
+  $('sheetSvg').toggleAttribute('hidden', true)
+  if (!result.ok) {
+    svg.toggleAttribute('hidden', true)
+    caption.textContent = result.error
+    caption.className = 'small warn'
+    return
+  }
+  const p = result.data
+  svg.toggleAttribute('hidden', false)
+  svg.setAttribute('viewBox', `0 0 ${p.boxW} ${p.boxH}`)
+  const ns = 'http://www.w3.org/2000/svg'
+  const el = (name, attrs) => {
+    const node = document.createElementNS(ns, name)
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v)
+    return node
+  }
+  svg.append(
+    el('rect', { x: 0, y: 0, width: p.boxW, height: p.boxH, class: 'paper' }),
+    el('image', { href: lastJob.urls[selectedIndex], x: p.image.x, y: p.image.y, width: p.image.w, height: p.image.h, preserveAspectRatio: 'none' }),
+    el('rect', { x: p.trim.x, y: p.trim.y, width: p.trim.w, height: p.trim.h, class: 'trim' }),
+    el('path', { d: p.d, class: 'cut' })
+  )
+  const bits = ['Magenta = cut line', 'dashed = trim edge']
+  if (p.pieces > 1) bits.push(`${p.pieces} separate pieces`)
+  if (p.shrunk) bits.push(`artwork shrunk ${p.shrunk}% so the border fits inside the sticker`)
+  if (cut.sheet !== 'single') {
+    const sheet = catalog.sheets.find((s) => s.id === cut.sheet)?.label.replace(' sheet', '')
+    bits.push(p.sheet?.pattern === 'staggered'
+      ? `${p.count} per ${sheet} sheet (${p.rows} staggered rows)`
+      : `${p.count} per ${sheet} sheet (${p.cols} × ${p.rows})`)
+    if (cut.marks) bits.push(`4 cutting marks, ${cut.markInsetMm} mm from the edge`)
+    if (p.sheet?.headerMissing) bits.push('shop header is empty — fill it in Settings')
+  }
+  if (p.sheet) drawSheetPreview(p, el)
+  caption.textContent = bits.join(' · ')
+  caption.className = 'muted small'
+}
+
+// Whole sheet at thumbnail size: stickers, cut lines, marks and header strip.
+function drawSheetPreview (p, el) {
+  const s = p.sheet
+  const svg = $('sheetSvg')
+  svg.setAttribute('viewBox', `0 0 ${s.pageW} ${s.pageH}`)
+  const defs = el('defs', {})
+  const sym = el('symbol', { id: 'sheetCell', viewBox: `0 0 ${p.boxW} ${p.boxH}` })
+  // Staggered rows nest into each other, so the art is shown clipped round, as printed.
+  if (s.pattern === 'staggered') {
+    const clip = el('clipPath', { id: 'sheetCellClip' })
+    clip.append(el('ellipse', { cx: p.boxW / 2, cy: p.boxH / 2, rx: p.boxW / 2, ry: p.boxH / 2 }))
+    defs.append(clip)
+    sym.setAttribute('clip-path', 'url(#sheetCellClip)')
+  }
+  sym.append(
+    el('image', { href: lastJob.urls[selectedIndex], x: p.image.x, y: p.image.y, width: p.image.w, height: p.image.h, preserveAspectRatio: 'none' }),
+    // Presentation attributes, not a class: CSS does not reach into <use> copies.
+    el('path', { d: p.d, fill: 'none', stroke: '#e0007a', 'stroke-width': 2 })
+  )
+  defs.append(sym)
+  svg.append(defs, el('rect', { x: 0, y: 0, width: s.pageW, height: s.pageH, class: 'paper' }))
+  for (const c of s.cells) svg.append(el('use', { href: '#sheetCell', x: c.x, y: c.y, width: s.cellW, height: s.cellH }))
+  if (s.header) svg.append(el('rect', { x: s.header.x, y: s.header.y, width: s.header.w, height: s.header.h, class: 'header-box' }))
+  if (s.marks) svg.append(el('path', { d: s.marks, class: 'mark' }))
+  svg.toggleAttribute('hidden', false)
+}
+
 // PNG is RGB-only by spec, and CMYK needs a profile — say which, not just "no".
 function refreshExportOptions () {
   if (!catalog) return
+  refreshCut()
   const format = picked('format')
   const colour = picked('colour')
   const cmykOk = catalog.cmykCapable.includes(format)
@@ -99,6 +235,16 @@ function refreshExportOptions () {
   if (!cmykOk && colour === 'cmyk') document.querySelector('input[name="colour"][value="rgb"]').checked = true
 
   $('watermarkField').hidden = picked('watermark') !== 'on'
+
+  $('resolutionField').hidden = !upscaleAvailable
+  const aiNote = $('upscaleNote')
+  if (upscaleAvailable && picked('resolution') === 'ai') {
+    aiNote.textContent = 'AI upscale adds real detail up to the DPI this page wants (4× at most). ' +
+      'Takes a few minutes the first time for each variant and size; repeat exports reuse it.'
+    aiNote.hidden = false
+  } else {
+    aiNote.hidden = true
+  }
 
   const note = []
   if (!cmykOk) note.push(`${format.toUpperCase()} has no CMYK colour space`)
@@ -206,12 +352,18 @@ async function boot () {
   preset.append(new Option('Custom…', 'custom'))
   preset.value = 'a4'
 
+  for (const kind of catalog.cutKinds) $('cutKind').append(new Option(kind.label, kind.id))
+  for (const mm of catalog.contourOffsetsMm) $('cutOffset').append(new Option(`${mm} mm`, String(mm)))
+  $('cutOffset').value = String(catalog.defaultOffsetMm)
+  for (const sheet of catalog.sheets) $('sheet').append(new Option(sheet.label, sheet.id))
+
   for (const u of catalog.units) $('customUnit').append(new Option(u, u))
   $('customUnit').value = 'mm'
 
   await loadSettings()
   await detectCodex()
   await refreshCodexLogin()
+  try { upscaleAvailable = unwrap(await api.upscaleStatus()).available } catch { upscaleAvailable = false }
   refreshExportOptions()
   refresh()
 }
@@ -246,6 +398,31 @@ async function loadSettings () {
   $('outputDir').value = settings.outputDir
   $('iccPath').value = settings.iccPath || ''
   $('watermarkText').value = settings.watermarkText || 'PROOF'
+  for (const key of HEADER_FIELDS) $(key).value = settings[key] ?? ''
+  refreshHeaderFont()
+  // Default the header on once the shop has filled one in.
+  if (!headerTouched) $('sheetHeader').checked = Boolean(settings.headerName || settings.headerPhone || settings.headerLogoPath)
+}
+let headerTouched = false
+
+const HEADER_FIELDS = [
+  'headerName', 'headerTagline', 'headerLabel', 'headerPhone', 'headerExtra', 'headerQr', 'headerLogoPath',
+  'headerLayout', 'headerHeightMm', 'headerNameScale', 'headerContactScale', 'headerColor', 'headerFont', 'headerFontPath'
+]
+
+function headerValues () {
+  const values = {}
+  for (const key of HEADER_FIELDS) {
+    const input = $(key)
+    values[key] = input.type === 'number' ? Number(input.value) : input.value
+  }
+  return values
+}
+
+function refreshHeaderFont () {
+  const custom = $('headerFont').value === 'custom'
+  $('headerFontPathField').hidden = !custom
+  $('browseFont').hidden = !custom
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +497,8 @@ api.onProgress((event) => {
     startProgress(event.total)
     hide($('jobNote'))
     appendLog(`Codex CLI · ${event.total} × ${event.renderSize}${event.reference ? ` · reference: ${event.reference}` : ''}`)
+  } else if (event.phase === 'upscale') {
+    if (exporting) $('saveExport').textContent = `Upscaling… ${Math.floor(event.percent || 0)}%`
   } else if (event.phase === 'log') {
     appendLog(event.text)
   } else if (event.phase === 'image') {
@@ -378,7 +557,8 @@ async function generate () {
       prompt: $('prompt').value,
       size: currentSize(),
       count: Number($('count').value),
-      referencePaths: references.map((r) => r.path)
+      referencePaths: references.map((r) => r.path),
+      cut: $('cutKind').value
     }), $('genError'))
 
     lastJob = job
@@ -435,6 +615,7 @@ function renderGrid (job) {
       $('saveExport').disabled = false
       // Variants differ in shape, so the warning belongs to the one picked.
       refresh()
+      updateCutPreview()
     })
     button.addEventListener('dblclick', () => openLightbox(index))
 
@@ -476,6 +657,7 @@ function renderGrid (job) {
   $('selectedLabel').textContent =
     `${job.files.length} image${job.files.length > 1 ? 's' : ''} saved${measuredFor(job, 0)} — click one`
   $('saveExport').disabled = true
+  updateCutPreview()
 }
 
 // ---------------------------------------------------------------------------
@@ -518,26 +700,34 @@ async function saveExport () {
   if (!selectedFile) return
   const button = $('saveExport')
   button.disabled = true
+  const upscale = upscaleAvailable && picked('resolution') === 'ai'
   button.textContent = 'Exporting…'
+  exporting = true
   hide($('pdfError'))
 
   try {
-    const { outPath, bytes } = unwrap(await api.saveExport({
+    const { outPath, bytes, upscaled, cut } = unwrap(await api.saveExport({
       file: selectedFile,
       size: currentSize(),
       fitMode: fitMode(),
       format: picked('format'),
       colour: picked('colour'),
-      watermark: watermark()
+      watermark: watermark(),
+      upscale,
+      cut: cutOptions()
     }), $('pdfError'))
 
     const kept = lastJob.files.length
     $('savedPath').textContent = outPath
     $('savedNote').textContent =
       `${(bytes / 1024 / 1024).toFixed(1)} MB · ${picked('colour').toUpperCase()}` +
+      `${upscaled ? ` · AI-upscaled ${upscaled.from} → ${upscaled.dpi} DPI` : ''}` +
+      `${cut ? ` · CutContour line${cut.count > 1 ? `, ${cut.count} stickers on the sheet` : ''}${cut.marks ? ', cutting marks' : ''}${cut.header ? ', shop header' : ''}` : ''}` +
       `${watermark() ? ' · watermarked' : ''} · all ${kept} generated image${kept > 1 ? 's are' : ' is'} kept in the same folder.`
     $('savedCard').hidden = false
+    $('savedCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   } catch { /* message already rendered */ } finally {
+    exporting = false
     button.disabled = false
     button.textContent = 'Export'
   }
@@ -551,13 +741,32 @@ for (const id of ['preset', 'landscape', 'customW', 'customH', 'customUnit', 'dp
   $(id).addEventListener('input', refresh)
 }
 
-for (const radio of document.querySelectorAll('input[name="fit"]')) radio.addEventListener('change', refresh)
+for (const radio of document.querySelectorAll('input[name="fit"]')) {
+  radio.addEventListener('change', () => { refresh(); updateCutPreview() })
+}
 $('watermarkText').addEventListener('input', refreshExportOptions)
 
 $('preset').addEventListener('change', () => {
   $('customRow').hidden = $('preset').value !== 'custom'
+  // A round sticker preset means a round cut, unless one was already chosen.
+  // Round and oval presets cut as circles; rectangle presets as rounded rectangles.
+  const preset = $('preset').value
+  if ($('cutKind').value === 'none') {
+    if (/^sticker(round|oval)/.test(preset)) $('cutKind').value = 'circle'
+    else if (/^stickerrect/.test(preset)) $('cutKind').value = 'rounded'
+  }
   refresh()
+  refreshExportOptions()
+  updateCutPreview()
 })
+
+for (const id of ['cutKind', 'cutOffset', 'sheet']) {
+  $(id).addEventListener('change', () => {
+    refreshExportOptions()
+    updateCutPreview()
+  })
+}
+for (const id of ['landscape', 'customW', 'customH', 'customUnit']) $(id).addEventListener('change', updateCutPreview)
 
 $('enhancePrompt').addEventListener('click', async () => {
   const button = $('enhancePrompt')
@@ -598,7 +807,7 @@ $('retryJob').addEventListener('click', () => {
   generate()
 })
 
-for (const group of ['format', 'colour', 'watermark']) {
+for (const group of ['format', 'colour', 'watermark', 'resolution']) {
   for (const radio of document.querySelectorAll(`input[name="${group}"]`)) {
     radio.addEventListener('change', refreshExportOptions)
   }
@@ -625,6 +834,55 @@ $('codexLogout').addEventListener('click', async () => {
   await refreshCodexLogin()
   refresh()
 })
+
+$('browseLogo').addEventListener('click', async () => {
+  hide($('settingsError'))
+  const result = await api.pickLogo()
+  if (!result.ok) { show($('settingsError'), result.error); return }
+  if (result.data) $('headerLogoPath').value = result.data
+})
+
+// The mark distance is a per-shop habit, so it is remembered on this machine.
+try {
+  const saved = localStorage.getItem('markInsetMm')
+  if (saved) $('markInset').value = saved
+} catch { /* storage unavailable: keep the default */ }
+$('markInset').addEventListener('change', () => {
+  $('markInset').value = markInsetMm()
+  try { localStorage.setItem('markInsetMm', $('markInset').value) } catch { /* not fatal */ }
+  updateCutPreview()
+})
+$('sheetPattern').addEventListener('change', updateCutPreview)
+
+$('headerFont').addEventListener('change', refreshHeaderFont)
+
+$('browseFont').addEventListener('click', async () => {
+  hide($('settingsError'))
+  const result = await api.pickFont()
+  if (!result.ok) { show($('settingsError'), result.error); return }
+  if (result.data) $('headerFontPath').value = result.data
+})
+
+$('testHeader').addEventListener('click', async () => {
+  hide($('settingsError'))
+  $('headerTestMsg').textContent = 'Building…'
+  const sheet = $('sheet').value
+  const result = await api.testHeader({ values: headerValues(), sheet, markInsetMm: markInsetMm() })
+  if (!result.ok) {
+    $('headerTestMsg').textContent = ''
+    show($('settingsError'), result.error)
+    return
+  }
+  $('headerTestMsg').textContent = `Opened ${result.data.split('/').pop()} — not saved until you press Save.`
+})
+
+for (const id of ['sheetMarks', 'sheetHeader']) {
+  $(id).addEventListener('change', () => {
+    if (id === 'sheetHeader') headerTouched = true
+    refreshExportOptions()
+    updateCutPreview()
+  })
+}
 
 $('browseIcc').addEventListener('click', async () => {
   hide($('settingsError'))
@@ -791,7 +1049,8 @@ $('saveSettings').addEventListener('click', async () => {
       outputDir: $('outputDir').value.trim(),
       codexPath: $('codexPath').value,
       iccPath: $('iccPath').value,
-      watermarkText: $('watermarkText').value
+      watermarkText: $('watermarkText').value,
+      ...headerValues()
     }), $('settingsError'))
     $('settingsMsg').textContent = 'Saved.'
     await loadSettings()

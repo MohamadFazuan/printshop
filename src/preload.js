@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('printshop', {
   saveSettings: call('settings:save'),
   pickFolder: call('settings:pickFolder'),
   pickIcc: call('settings:pickIcc'),
+  pickLogo: call('settings:pickLogo'),
+  pickFont: call('settings:pickFont'),
+  testHeader: call('header:test'),
   detectCodex: call('codex:detect'),
   codexStatus: call('codex:status'),
   codexLogin: call('codex:login'),
@@ -24,6 +27,8 @@ contextBridge.exposeInMainWorld('printshop', {
   pathForFile: (file) => webUtils.getPathForFile(file),
   generate: call('image:generate'),
   saveExport: call('export:save'),
+  upscaleStatus: call('upscale:status'),
+  cutPreview: call('cut:preview'),
   // One-way main → renderer stream; the renderer cannot send on this channel.
   onProgress: (callback) => ipcRenderer.on('job:progress', (_event, payload) => callback(payload)),
   reveal: call('shell:reveal')

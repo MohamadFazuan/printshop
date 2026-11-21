@@ -46,6 +46,10 @@ jobs:
 
       - run: npm ci
 
+      # Real-ESRGAN for AI upscaling. ~50 MB per platform, so it is fetched
+      # (SHA-256 pinned) rather than committed, then packed as extraResources.
+      - run: npm run fetch-upscaler
+
       # Cheap gate — a broken build should not reach an installer.
       - run: npm run verify
 

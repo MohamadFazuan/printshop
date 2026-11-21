@@ -78,6 +78,12 @@
       </div>
     </fieldset>
 
+    <div class="row">
+      <label class="field grow"><span>Cut line</span><select id="cutKind"></select></label>
+      <label class="field" id="cutOffsetField" hidden><span>White border</span><select id="cutOffset"></select></label>
+    </div>
+    <output id="cutNote" class="muted small" hidden></output>
+
     <p id="shapeNote" class="banner warn" hidden></p>
 
     <div class="actions">
@@ -118,7 +124,41 @@
     <h2>Pick one to export</h2>
     <div id="grid" class="grid"></div>
 
+    <figure id="cutPreview" class="cut-preview" hidden>
+      <svg id="cutSvg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Cut line preview"></svg>
+      <svg id="sheetSvg" class="sheet-preview" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sheet layout preview" hidden></svg>
+      <figcaption id="cutCaption" class="muted small"></figcaption>
+    </figure>
+
     <div class="exportopts">
+    <label class="field" id="sheetField" hidden>
+      <span>Layout</span>
+      <select id="sheet"></select>
+    </label>
+
+    <label class="field" id="patternField" hidden>
+      <span>Pattern</span>
+      <select id="sheetPattern">
+        <option value="grid">Grid</option>
+        <option value="staggered">Staggered</option>
+      </select>
+    </label>
+
+    <fieldset class="field" id="sheetExtrasField" hidden>
+      <span>On the sheet</span>
+      <label class="radio"><input type="checkbox" id="sheetMarks" checked> Cutting marks</label>
+      <label class="radio inset">
+        <input type="number" id="markInset" value="10" min="3" max="40" step="1" inputmode="decimal"> mm from edge
+      </label>
+      <label class="radio"><input type="checkbox" id="sheetHeader"> Shop header</label>
+    </fieldset>
+
+    <fieldset class="field" id="resolutionField" hidden>
+      <span>Resolution</span>
+      <label class="radio"><input type="radio" name="resolution" value="ai" checked> AI upscale</label>
+      <label class="radio"><input type="radio" name="resolution" value="original"> Original</label>
+    </fieldset>
+
     <fieldset class="field">
       <span>Format</span>
       <label class="radio"><input type="radio" name="format" value="pdf" checked> PDF</label>
@@ -144,6 +184,8 @@
       <span>Watermark text</span>
       <input type="text" id="watermarkText" placeholder="PROOF">
     </label>
+
+    <output id="upscaleNote" class="muted small upscale-note" hidden></output>
 
     <div class="actions">
       <output id="selectedLabel" class="muted">Nothing selected</output>
@@ -179,6 +221,94 @@
       <span>CMYK profile (.icc)</span>
       <input type="text" id="iccPath" spellcheck="false" placeholder="none — required for CMYK export">
     </label>
+
+    <h3 class="small-head">Sticker sheet header</h3>
+    <p class="muted small">Printed across the top of sticker sheets when <b>Shop header</b> is ticked. Leave a box blank to skip it.</p>
+    <div class="row">
+      <label class="field grow">
+        <span>Shop name</span>
+        <input type="text" id="headerName" placeholder="ECO GLOBAL PRINTING">
+      </label>
+      <label class="field grow">
+        <span>Tagline (under name)</span>
+        <input type="text" id="headerTagline" placeholder="Siap dalam 1 jam">
+      </label>
+    </div>
+    <div class="row">
+      <label class="field grow">
+        <span>Order label</span>
+        <input type="text" id="headerLabel" placeholder="Untuk Tempahan:">
+      </label>
+      <label class="field grow">
+        <span>Phone</span>
+        <input type="text" id="headerPhone" placeholder="013-712 9937">
+      </label>
+    </div>
+    <label class="field">
+      <span>Extra line (under phone)</span>
+      <input type="text" id="headerExtra" placeholder="Lot 12, Jalan Besar · @ecoglobalprinting">
+    </label>
+    <label class="field">
+      <span>QR code link</span>
+      <input type="text" id="headerQr" spellcheck="false" placeholder="https://wa.me/60137129937">
+    </label>
+    <label class="field">
+      <span>Logo image</span>
+      <input type="text" id="headerLogoPath" spellcheck="false" placeholder="none">
+    </label>
+    <div class="actions"><span></span><button id="browseLogo" class="ghost small">Logo…</button></div>
+
+    <div class="row">
+      <label class="field grow">
+        <span>Layout</span>
+        <select id="headerLayout">
+          <option value="brand-left">Name left · QR + contact right</option>
+          <option value="brand-right">QR + contact left · name right</option>
+          <option value="brand-centre">QR left · name centre · contact right</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Height (mm)</span>
+        <input type="number" id="headerHeightMm" min="10" max="30" step="1" value="15">
+      </label>
+    </div>
+    <div class="row">
+      <label class="field grow">
+        <span>Name size (%)</span>
+        <input type="number" id="headerNameScale" min="30" max="200" step="5" value="100">
+      </label>
+      <label class="field grow">
+        <span>Contact size (%)</span>
+        <input type="number" id="headerContactScale" min="30" max="200" step="5" value="100">
+      </label>
+      <label class="field">
+        <span>Text colour</span>
+        <input type="color" id="headerColor" value="#000000">
+      </label>
+    </div>
+    <div class="row">
+      <label class="field grow">
+        <span>Font</span>
+        <select id="headerFont">
+          <option value="helvetica">Helvetica</option>
+          <option value="times">Times</option>
+          <option value="courier">Courier</option>
+          <option value="custom">Font file (.ttf / .otf)…</option>
+        </select>
+      </label>
+      <label class="field grow" id="headerFontPathField" hidden>
+        <span>Font file</span>
+        <input type="text" id="headerFontPath" spellcheck="false" placeholder="none">
+      </label>
+    </div>
+    <p class="muted small">Black prints as pure black ink. The QR code always prints black so it scans. A font file is needed for Chinese, Tamil or Jawi text.</p>
+    <div class="actions">
+      <output id="headerTestMsg" class="muted small"></output>
+      <span class="btns">
+        <button id="browseFont" class="ghost small" hidden>Font…</button>
+        <button id="testHeader" class="ghost small">Test print header</button>
+      </span>
+    </div>
 
     <label class="field">
       <span>Codex CLI path</span>
