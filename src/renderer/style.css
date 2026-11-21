@@ -162,6 +162,7 @@ button.small { padding: 4px 10px; font-size: 12px; }
 .thumb { border: 1px solid var(--line); border-radius: 8px; padding: 0; overflow: hidden; background: #fafafa; cursor: pointer; width: 100%; }
 .thumb img { display: block; width: 100%; height: auto; }
 .thumb.selected { outline: 2px solid var(--ink); outline-offset: -1px; }
+.reuse { width: 100%; margin-top: 6px; }
 
 /* Zoom sits over the tile rather than inside it — a button inside a button is invalid. */
 .zoom {

@@ -444,7 +444,26 @@ function renderGrid (job) {
       openLightbox(index)
     })
 
-    wrap.append(button, zoom)
+    // Editing a result ("same scene, swap the cat for a dog") is the usual next
+    // go, so the output goes straight back in as a reference.
+    const reuse = document.createElement('button')
+    reuse.className = 'ghost small reuse'
+    reuse.type = 'button'
+    reuse.textContent = 'Use as reference'
+    reuse.setAttribute('aria-label', `Use variant ${index + 1} as a reference image`)
+    reuse.addEventListener('click', () => withReferenceErrors(async () => {
+      if (references.length >= MAX_REFERENCES) {
+        throw new Error(`Already ${MAX_REFERENCES} reference images — remove one first.`)
+      }
+      // Every job names its output 01.png, 02.png…, so say which job it came from.
+      const jobName = file.split(/[\\/]/).slice(-2, -1)[0]
+      const picked = unwrap(await api.describeReferences({ paths: [file] }), $('referenceError'))
+      addReferences(picked.map((ref) => ({ ...ref, name: jobName ? `${jobName} · ${ref.name}` : ref.name })))
+      $('referenceField').scrollIntoView({ behavior: 'smooth', block: 'center' })
+      $('prompt').focus()
+    }))
+
+    wrap.append(button, zoom, reuse)
     grid.append(wrap)
   })
 
