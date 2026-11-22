@@ -601,27 +601,25 @@ test('a sticker PDF carries the cut as a CutContour spot colour, with trim and b
   near(sheet.getPage(0).getSize().width, 297 * cutline.MM, 0.05)
 })
 
-test('cutting marks match the shop sheet: bottom L corners and side ticks, 20 mm arms', () => {
-  const W = 297 * cutline.MM
-  const H = 420 * cutline.MM
-  const marks = cutline.sheetMarks(W, H)
-  assert.equal(marks.length, 6)
-  const inset = 10 * cutline.MM
-  const len = 20 * cutline.MM
-  // Bottom-left L: corner at the inset, both arms 20 mm.
-  assert.deepEqual(marks[0][1], [inset, inset])
-  near(marks[0][0][1] - inset, len)
-  near(marks[0][2][0] - inset, len)
-  // Bottom-right L mirrors it.
-  assert.deepEqual(marks[1][1], [W - inset, inset])
-  // Side bars are 20 mm, centred at the same height on both sides, ticks pointing in.
-  near(marks[2][1][1] - marks[2][0][1], len)
-  near(marks[4][1][1] - marks[4][0][1], len)
-  near(marks[3][0][1], H / 2)
-  near(marks[5][0][1], H / 2)
-  assert.ok(marks[3][1][0] > marks[3][0][0] && marks[5][1][0] < marks[5][0][0])
-  // No marks along the top: that edge belongs to the header.
-  for (const line of marks) for (const [, y] of line) assert.ok(y <= H / 2 + len / 2 + 0.01)
+test('cutting marks match the CutterPro plugin rectangle for rectangle', () => {
+  const MM = cutline.MM
+  const mm = (r) => [r.x, r.y, r.w, r.h].map((v) => Math.round(v / MM * 1000) / 1000)
+  // ThAddFourLMark2 with margin 10 on a 210 mm wide page, in mm, y up.
+  const W = 210 * MM
+  assert.deepEqual(cutline.sheetMarks(W, 297 * MM).map(mm), [
+    [10, 10, 1, 20], [10, 10, 20, 1],
+    [199, 10, 1, 20], [180, 10, 20, 1],
+    [10, 200, 1, 20], [10, 210, 5, 1],
+    [199, 200, 1, 20], [195, 210, 5, 1]
+  ])
+  // The upper bars sit by the fixed 280 mm gap, not the paper height.
+  assert.deepEqual(cutline.sheetMarks(W, 420 * MM).map(mm)[4], [10, 200, 1, 20])
+  // Margin 30: top of the bar at 280 - 50 - 30 = 200.
+  assert.deepEqual(cutline.sheetMarks(W, 297 * MM, 30 * MM).map(mm).slice(0, 6), [
+    [30, 30, 1, 20], [30, 30, 20, 1],
+    [179, 30, 1, 20], [160, 30, 20, 1],
+    [30, 180, 1, 20], [30, 190, 5, 1]
+  ])
 })
 
 test('stickers keep clear of the marks and the header', () => {
@@ -631,15 +629,15 @@ test('stickers keep clear of the marks and the header', () => {
   const header = { name: 'SHOP', label: '', phone: '', logo: null, qr: null }
   const L = stickerLayout(size, { ...base, marks: true, header })
   const m = L.margins
-  near(m.left, 20.5 * cutline.MM)
-  near(m.right, 20.5 * cutline.MM)
+  near(m.left, 20 * cutline.MM)
+  near(m.right, 20 * cutline.MM)
   assert.ok(m.bottom >= 15 * cutline.MM)
   assert.ok(m.top >= 29 * cutline.MM - 0.01)
   for (const c of L.cells) {
     assert.ok(c.x >= m.left - 0.01 && c.x + L.cellW <= L.pageW - m.right + 0.01)
     assert.ok(c.y >= m.bottom - 0.01 && c.y + L.cellH <= L.header.y + 0.01)
   }
-  assert.equal(L.marks.length, 6)
+  assert.equal(L.marks.length, 8)
   // Off by default on a single sticker.
   assert.equal(stickerLayout(size, { ...base, sheet: 'single', marks: true }).marks.length, 0)
 })
@@ -650,8 +648,8 @@ test('the mark distance from the edge moves the marks and the stickers with it',
   const base = { kind: 'circle', sheet: 'a3', bleedPt: cutline.BLEED_PT, path: cutline.shapeCutPath('circle', wPt, hPt), marks: true }
   const near10 = stickerLayout(size, { ...base, markInsetPt: 10 * cutline.MM })
   const far = stickerLayout(size, { ...base, markInsetPt: 30 * cutline.MM })
-  near(far.marks[0][1][0], 30 * cutline.MM)
-  near(far.marks[0][1][1], 30 * cutline.MM)
+  near(far.marks[0].x, 30 * cutline.MM)
+  near(far.marks[0].y, 30 * cutline.MM)
   assert.ok(far.count < near10.count, `${far.count} should be fewer than ${near10.count}`)
   for (const c of far.cells) assert.ok(c.x >= far.margins.left - 0.01 && c.y >= far.margins.bottom - 0.01)
   // Out-of-range values are clamped, never trusted.
@@ -693,7 +691,7 @@ test('rectangle stickers tile without rotating and keep their shape', () => {
   assert.ok(SIZE_PRESETS.some((p) => p.id === 'stickerrect9050'))
 })
 
-test('a marked sheet PDF draws the marks and header in process black', async () => {
+test('a marked sheet PDF fills the marks in the plugin black and the header in process black', async () => {
   const image = fs.readFileSync(path.join(__dirname, '..', 'build', 'icon.png'))
   const size = { w: 50, h: 50, unit: 'mm' }
   const { wPt, hPt } = sizeToPoints(size)
@@ -708,7 +706,7 @@ test('a marked sheet PDF draws the marks and header in process black', async () 
     const raw = Buffer.from(st.getContents())
     try { return inflateSync(raw).toString('latin1') } catch { return raw.toString('latin1') }
   }).join('\n')
-  assert.match(text, /0 0 0 1 K/)
+  assert.match(text, /0\.05 0\.07 0\.09 1 k/)
   assert.match(text, /0 0 0 1 k/)
 
   await assert.rejects(
@@ -757,6 +755,24 @@ test('header layouts, colour and extra lines all reach the PDF', async () => {
   const fonts = times.getPage(0).node.Resources().lookup(PDFName.of('Font'), PDFDict)
   const names = fonts.values().map((ref) => times.context.lookup(ref).get(PDFName.of('BaseFont')).toString())
   assert.ok(names.some((n) => /Times/.test(n)), names.join(','))
+})
+
+test('the Settings header preview matches the printed layout', async () => {
+  const { headerPreview } = require('../src/core')
+  const base = { name: 'ECO GLOBAL', tagline: 'Siap 1 jam', label: 'Untuk Tempahan:', phone: '013-712 9937', extra: '@ecoglobal', logo: null, qr: { size: 3, data: [1, 0, 1, 0, 1, 0, 1, 0, 1] }, heightPt: 18 * cutline.MM }
+  for (const layout of ['brand-left', 'brand-right', 'brand-centre']) {
+    const p = await headerPreview('a4', { ...base, layout })
+    near(p.h, 18 * cutline.MM)
+    assert.strictEqual(p.texts.length, 5)
+    for (const t of p.texts) {
+      assert.ok(t.x >= -0.01 && t.x + t.width <= p.w + 0.01, `${layout}: ${t.text} inside the strip`)
+      assert.ok(t.y > 0 && t.y <= p.h + 0.01, `${layout}: ${t.text} baseline inside the strip`)
+    }
+    // QR is a square the strip's height, flush with the top.
+    near(p.qr.size, p.h)
+    near(p.qr.y, 0)
+  }
+  assert.strictEqual((await headerPreview('a4', { ...base, color: 'nope' })).color, '#000000')
 })
 
 test('a font file lets the header print non-Latin names', async () => {

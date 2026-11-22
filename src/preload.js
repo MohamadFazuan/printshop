@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('printshop', {
   pickLogo: call('settings:pickLogo'),
   pickFont: call('settings:pickFont'),
   testHeader: call('header:test'),
+  previewHeader: call('header:preview'),
   detectCodex: call('codex:detect'),
   codexStatus: call('codex:status'),
   codexLogin: call('codex:login'),

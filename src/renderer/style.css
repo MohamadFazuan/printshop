@@ -325,7 +325,13 @@ input:not([type="checkbox"]):not([type="radio"]), select { height: 36px; }
 .cut-preview figcaption.warn { color: var(--warn, #a15c00); }
 
 .cut-preview .sheet-preview { width: 150px; height: 212px; background: none; }
-.cut-preview .mark { fill: none; stroke: #111; stroke-width: 2.83; }
+.cut-preview .mark { fill: #111; stroke: none; }
 .cut-preview .header-box { fill: #e6e6e2; }
 .small-head { font-size: 13px; margin: 18px 0 4px; }
+.header-preview { margin: 10px 0 6px; }
+.header-preview svg { display: block; width: 100%; height: auto; background: #fff; border: 1px dashed var(--line); border-radius: 4px; }
+.header-preview svg:empty { display: none; }
+.header-preview figcaption { margin-top: 4px; }
+.header-preview figcaption.warn { color: var(--warn); }
+
 .radio.inset input { width: 56px; }

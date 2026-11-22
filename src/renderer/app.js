@@ -400,6 +400,7 @@ async function loadSettings () {
   $('watermarkText').value = settings.watermarkText || 'PROOF'
   for (const key of HEADER_FIELDS) $(key).value = settings[key] ?? ''
   refreshHeaderFont()
+  scheduleHeaderPreview()
   // Default the header on once the shop has filled one in.
   if (!headerTouched) $('sheetHeader').checked = Boolean(settings.headerName || settings.headerPhone || settings.headerLogoPath)
 }
@@ -840,6 +841,7 @@ $('browseLogo').addEventListener('click', async () => {
   const result = await api.pickLogo()
   if (!result.ok) { show($('settingsError'), result.error); return }
   if (result.data) $('headerLogoPath').value = result.data
+  scheduleHeaderPreview()
 })
 
 // The mark distance is a per-shop habit, so it is remembered on this machine.
@@ -856,11 +858,102 @@ $('sheetPattern').addEventListener('change', updateCutPreview)
 
 $('headerFont').addEventListener('change', refreshHeaderFont)
 
+// Live header strip in Settings. Positions come from main, from the same
+// layout the PDF prints with; text is stretched to the PDF's measured width so
+// a screen font with different metrics cannot make it look like it fits.
+const HEADER_FAMILIES = {
+  helvetica: 'Helvetica, Arial, sans-serif',
+  times: '"Times New Roman", Times, serif',
+  courier: '"Courier New", Courier, monospace'
+}
+let headerPreviewSeq = 0
+let headerPreviewTimer = null
+let headerFontLoaded = null
+
+function scheduleHeaderPreview () {
+  clearTimeout(headerPreviewTimer)
+  headerPreviewTimer = setTimeout(updateHeaderPreview, 250)
+}
+
+async function updateHeaderPreview () {
+  const seq = ++headerPreviewSeq
+  const result = await api.previewHeader({ values: headerValues(), sheet: $('sheet').value, markInsetMm: markInsetMm() })
+  if (seq !== headerPreviewSeq) return
+  const svg = $('headerSvg')
+  const msg = $('headerPreviewMsg')
+  svg.replaceChildren()
+  msg.className = 'muted small'
+  if (!result.ok) {
+    msg.textContent = result.error
+    msg.className = 'small warn'
+    return
+  }
+  const p = result.data
+  if (!p) {
+    msg.textContent = 'Fill in a shop name, phone, QR link or logo to see the header.'
+    return
+  }
+  let family = HEADER_FAMILIES[p.font] || HEADER_FAMILIES.helvetica
+  if (p.font === 'custom' && p.fontBytes) {
+    try {
+      const face = new FontFace('PrintshopHeaderFont', p.fontBytes)
+      await face.load()
+      if (headerFontLoaded) document.fonts.delete(headerFontLoaded)
+      document.fonts.add(face)
+      headerFontLoaded = face
+      family = 'PrintshopHeaderFont, sans-serif'
+    } catch { /* falls back to sans; widths still match the PDF */ }
+    if (seq !== headerPreviewSeq) return
+  }
+  const ns = 'http://www.w3.org/2000/svg'
+  const el = (name, attrs) => {
+    const node = document.createElementNS(ns, name)
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v)
+    return node
+  }
+  svg.setAttribute('viewBox', `0 0 ${p.w} ${p.h}`)
+  if (p.logo) svg.append(el('image', { href: p.logo.href, x: p.logo.x, y: p.logo.y, width: p.logo.width, height: p.logo.height, preserveAspectRatio: 'none' }))
+  if (p.qr) {
+    const cell = p.qr.size / p.qr.n
+    let d = ''
+    for (let r = 0; r < p.qr.n; r++) {
+      for (let c = 0; c < p.qr.n; c++) {
+        if (p.qr.data[r * p.qr.n + c]) d += `M${p.qr.x + c * cell} ${p.qr.y + r * cell}h${cell}v${cell}h${-cell}z`
+      }
+    }
+    svg.append(el('path', { d, fill: '#000', 'shape-rendering': 'crispEdges' }))
+  }
+  for (const t of p.texts) {
+    const node = el('text', {
+      x: t.x,
+      y: t.y,
+      'font-size': t.size,
+      'font-family': family,
+      'font-weight': p.font === 'custom' ? 'normal' : t.weight,
+      fill: p.color,
+      textLength: t.width,
+      lengthAdjust: 'spacingAndGlyphs'
+    })
+    node.textContent = t.text
+    svg.append(node)
+  }
+  const sheetName = $('sheet').value === 'single' ? `${p.sheet} (test sheet size)` : p.sheet
+  msg.textContent = `Actual layout on ${sheetName}, ${Math.round(p.w / 2.8346)} × ${Math.round(p.h / 2.8346)} mm. Test print to check colour and font.`
+}
+
+for (const key of HEADER_FIELDS) {
+  $(key).addEventListener('input', scheduleHeaderPreview)
+  $(key).addEventListener('change', scheduleHeaderPreview)
+}
+$('sheet').addEventListener('change', scheduleHeaderPreview)
+$('markInset').addEventListener('change', scheduleHeaderPreview)
+
 $('browseFont').addEventListener('click', async () => {
   hide($('settingsError'))
   const result = await api.pickFont()
   if (!result.ok) { show($('settingsError'), result.error); return }
   if (result.data) $('headerFontPath').value = result.data
+  scheduleHeaderPreview()
 })
 
 $('testHeader').addEventListener('click', async () => {

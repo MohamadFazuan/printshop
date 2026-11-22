@@ -8,9 +8,9 @@ const {
   PDFName, PDFDict, PDFNumber, PDFOperator, PDFOperatorNames,
   pushGraphicsState, popGraphicsState, rectangle, clip: clipPath, endPath,
   moveTo, lineTo, appendBezierCurve, closePath, stroke, setLineWidth, setGraphicsState,
-  setLineJoin, setLineCap, LineJoinStyle, LineCapStyle, setStrokingColor, setFillingColor, fill
+  setStrokingColor, setFillingColor, fill
 } = require('pdf-lib')
-const { sheetLayout, sheetMargins, sheetMarks, headerBox, shapeCutPath, MARK_INSET_PT, MARK_WIDTH_PT, MM, cutBrief } = require('./cutline')
+const { sheetLayout, sheetMargins, sheetMarks, headerBox, shapeCutPath, MARK_INSET_PT, MM, cutBrief } = require('./cutline')
 
 const EXPORT_FORMATS = ['pdf', 'png', 'jpeg', 'tiff']
 const COLOUR_SPACES = ['rgb', 'cmyk']
@@ -419,23 +419,18 @@ function stickerLayout (size, cut) {
 // is what the cutter software keys on; the magenta is only how it looks on
 // screen. Overprint is on so the line never knocks a hole in the artwork if a
 // RIP prints it by mistake.
-// Process black only (K 100): an optical sensor reads it best, and it never
-// prints as a four-colour smear when slightly off register.
+// Process black only (K 100) for header text and the QR: it never prints as a
+// four-colour smear when slightly off register.
 const MARK_INK = cmyk(0, 0, 0, 1)
 
-function drawRegistrationMarks (page, polylines) {
-  page.pushOperators(
-    pushGraphicsState(),
-    setStrokingColor(MARK_INK),
-    setLineWidth(MARK_WIDTH_PT),
-    setLineJoin(LineJoinStyle.Miter),
-    setLineCap(LineCapStyle.Projecting)
-  )
-  for (const line of polylines) {
-    page.pushOperators(moveTo(line[0][0], line[0][1]))
-    for (const [x, y] of line.slice(1)) page.pushOperators(lineTo(x, y))
-  }
-  page.pushOperators(stroke(), popGraphicsState())
+// The plugin fills its marks with C5 M7 Y9 K100; matched so the sensor sees
+// the same black it was set up on.
+const REG_MARK_INK = cmyk(0.05, 0.07, 0.09, 1)
+
+function drawRegistrationMarks (page, rects) {
+  page.pushOperators(pushGraphicsState(), setFillingColor(REG_MARK_INK))
+  for (const m of rects) page.pushOperators(rectangle(m.x, m.y, m.w, m.h))
+  page.pushOperators(fill(), popGraphicsState())
 }
 
 const HEADER_LAYOUTS = ['brand-left', 'brand-right', 'brand-centre']
@@ -494,6 +489,31 @@ function stackLines (lines, h) {
 // header: { name, tagline, label, phone, extra, logo, qr, layout, nameScale,
 //           contactScale, color, font: 'helvetica'|'times'|'courier', fontBytes }
 async function drawSheetHeader (pdf, page, box, header) {
+  const plan = await layoutSheetHeader(pdf, box, header)
+  for (const t of plan.texts) {
+    page.drawText(t.text, { x: t.x, y: t.y, size: t.size, font: plan.fonts[t.weight], color: plan.ink })
+  }
+  // QR as vector squares, so it scans crisply at any print resolution. Always
+  // black: a pale brand colour can make a code unreadable.
+  if (plan.qr) {
+    const { x, y, n, cell, data } = plan.qr
+    page.pushOperators(pushGraphicsState(), setFillingColor(MARK_INK))
+    for (let r = 0; r < n; r++) {
+      for (let c = 0; c < n; c++) {
+        if (data[r * n + c]) page.pushOperators(rectangle(x + c * cell, y + (n - 1 - r) * cell, cell + 0.05, cell + 0.05))
+      }
+    }
+    page.pushOperators(fill(), popGraphicsState())
+  }
+  if (plan.logo) {
+    const { image, x, y, width, height } = plan.logo
+    page.drawImage(image, { x, y, width, height })
+  }
+}
+
+// Where every piece of the header goes, in PDF points (y up). The PDF and the
+// Settings preview both draw from this, so the preview cannot drift from print.
+async function layoutSheetHeader (pdf, box, header) {
   let regular
   let bold
   const custom = Boolean(header.fontBytes)
@@ -505,6 +525,7 @@ async function drawSheetHeader (pdf, page, box, header) {
     regular = await pdf.embedFont(r)
     bold = await pdf.embedFont(b)
   }
+  const weight = (font) => (font === bold ? 'bold' : 'regular')
   const ink = headerInk(header.color)
   const layout = HEADER_LAYOUTS.includes(header.layout) ? header.layout : 'brand-left'
   const nameScale = Math.min(2, Math.max(0.3, (Number(header.nameScale) || 100) / 100))
@@ -517,6 +538,7 @@ async function drawSheetHeader (pdf, page, box, header) {
   const extra = headerText(regular, header.extra, 'extra line', custom)
   const gap = 3 * MM
   const h = box.h
+  const texts = []
 
   // Contact block: up to three lines, sized to share the strip height.
   const contact = [
@@ -564,22 +586,10 @@ async function drawSheetHeader (pdf, page, box, header) {
   contact.forEach((l, i) => {
     const w = l.font.widthOfTextAtSize(l.text, l.size)
     const x = slots.contact.align === 'right' ? slots.contact.x + contactW - w : slots.contact.x
-    page.drawText(l.text, { x, y: box.y + baselines[i], size: l.size, font: l.font, color: ink })
+    texts.push({ text: l.text, x, y: box.y + baselines[i], size: l.size, width: w, weight: weight(l.font) })
   })
 
-  // QR as vector squares, so it scans crisply at any print resolution. Always
-  // black: a pale brand colour can make a code unreadable.
-  if (qrW) {
-    const n = header.qr.size
-    const cell = qrW / n
-    page.pushOperators(pushGraphicsState(), setFillingColor(MARK_INK))
-    for (let r = 0; r < n; r++) {
-      for (let c = 0; c < n; c++) {
-        if (header.qr.data[r * n + c]) page.pushOperators(rectangle(slots.qr.x + c * cell, box.y + (n - 1 - r) * cell, cell + 0.05, cell + 0.05))
-      }
-    }
-    page.pushOperators(fill(), popGraphicsState())
-  }
+  const qr = qrW ? { x: slots.qr.x, y: box.y, size: qrW, n: header.qr.size, cell: qrW / header.qr.size, data: header.qr.data } : null
 
   // Brand block: logo then name over tagline, fitted into its slot.
   const brand = slots.brand
@@ -594,9 +604,10 @@ async function drawSheetHeader (pdf, page, box, header) {
   const textW = lines.length && textRoom > 0 ? Math.max(...lines.map((l) => l.font.widthOfTextAtSize(l.text, l.size))) : 0
   const blockW = (logo ? logoW : 0) + (logo && textW ? gap : 0) + textW
   let x = brand.align === 'left' ? brand.x : brand.align === 'right' ? brand.x + brand.w - blockW : brand.x + (brand.w - blockW) / 2
+  let logoPlace = null
   if (logo) {
     const lh = logoW * logo.height / logo.width
-    page.drawImage(logo, { x, y: box.y + (h - lh) / 2, width: logoW, height: lh })
+    logoPlace = { image: logo, x, y: box.y + (h - lh) / 2, width: logoW, height: lh }
     x += logoW + gap
   }
   if (textW) {
@@ -604,8 +615,30 @@ async function drawSheetHeader (pdf, page, box, header) {
     lines.forEach((l, i) => {
       const w = l.font.widthOfTextAtSize(l.text, l.size)
       const lx = brand.align === 'right' ? x + textW - w : brand.align === 'centre' ? x + (textW - w) / 2 : x
-      page.drawText(l.text, { x: lx, y: box.y + ys[i], size: l.size, font: l.font, color: ink })
+      texts.push({ text: l.text, x: lx, y: box.y + ys[i], size: l.size, width: w, weight: weight(l.font) })
     })
+  }
+  return { ink, fonts: { regular, bold }, texts, qr, logo: logoPlace }
+}
+
+// The header strip on its own, for the Settings preview: box-relative points
+// with y down (SVG), so the screen draws exactly what the PDF will print.
+async function headerPreview (sheetKey, header, { marks = true, insetPt } = {}) {
+  const { SHEETS } = require('./cutline')
+  const sheet = SHEETS[sheetKey] || SHEETS.a4
+  const margins = sheetMargins({ marks, header: true, insetPt, headerHeightPt: header.heightPt })
+  const box = headerBox(sheet.w, sheet.h, margins, header.heightPt)
+  const plan = await layoutSheetHeader(await PDFDocument.create(), box, header)
+  const flip = (y) => box.h - (y - box.y)
+  return {
+    w: box.w,
+    h: box.h,
+    sheet: sheet.label,
+    color: /^#[0-9a-f]{6}$/i.test(String(header.color || '').trim()) ? header.color.trim() : '#000000',
+    font: header.fontBytes ? 'custom' : (HEADER_FONTS[header.font] ? header.font : 'helvetica'),
+    texts: plan.texts.map((t) => ({ text: t.text, x: t.x - box.x, y: flip(t.y), size: t.size, width: t.width, weight: t.weight })),
+    qr: plan.qr && { x: plan.qr.x - box.x, y: flip(plan.qr.y + plan.qr.size), size: plan.qr.size, n: plan.qr.n, data: plan.qr.data },
+    logo: plan.logo && { x: plan.logo.x - box.x, y: flip(plan.logo.y + plan.logo.height), width: plan.logo.width, height: plan.logo.height }
   }
 }
 
@@ -754,6 +787,7 @@ function upscalePlan (srcW, srcH, wPt, hPt, fitMode = 'fill') {
 module.exports = {
   stickerImageRect,
   buildHeaderProof,
+  headerPreview,
   HEADER_LAYOUTS,
   HEADER_FONTS,
   stickerLayout,

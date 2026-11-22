@@ -402,14 +402,18 @@ const round3 = (n) => Math.round(n * 1000) / 1000
 
 // Tiles copies of a sticker (its bleed box, cellW × cellH) on a sheet. Tries
 // the sheet both ways up and keeps whichever holds more.
-// Registration marks for an optical-sensor cutter, as on the shop's own sheets:
-// an L at each bottom corner and a bar with an inward tick halfway up each
-// side. All four sit MARK_INSET from the paper edge, arms MARK_LENGTH long.
+// Registration marks for the shop's Teneth CutterPro cutter, drawn exactly as
+// its CorelDRAW plugin (ThAddFourLMark2) draws them: filled 1 mm bars, an L at
+// each bottom corner and a bar with an inward 5 mm tick on each side higher up.
+// The inset is each mark's outer edge, arms MARK_LENGTH long overall.
 const MARK_LENGTH_PT = 20 * MM
 const MARK_TICK_PT = 5 * MM
 const MARK_INSET_PT = 10 * MM
 const MARK_WIDTH_PT = 1 * MM
 const MARK_CLEAR_PT = 5 * MM
+// The plugin puts the top of the upper bars at 280 - 50 - inset mm from the
+// bottom edge, whatever the paper height (its m_gap is fixed at 280).
+const MARK_TOP_BASE_PT = 230 * MM
 const HEADER_HEIGHT_PT = 15 * MM
 const HEADER_GAP_PT = 4 * MM
 const HEADER_HEIGHT_MIN_MM = 10
@@ -421,7 +425,6 @@ function clampHeaderHeight (heightPt) {
   return Math.min(HEADER_HEIGHT_MAX_MM, Math.max(HEADER_HEIGHT_MIN_MM, mm)) * MM
 }
 
-// Polylines in points, y up, origin at the sheet's bottom-left corner.
 const MARK_INSET_MIN_MM = 3
 const MARK_INSET_MAX_MM = 40
 const LAYOUT_PATTERNS = ['grid', 'staggered']
@@ -432,18 +435,25 @@ function clampInset (insetPt) {
   return Math.min(MARK_INSET_MAX_MM, Math.max(MARK_INSET_MIN_MM, mm)) * MM
 }
 
+// Filled rectangles { x, y, w, h } in points, y up, origin at the sheet's
+// bottom-left corner. Same coordinates as the plugin, so the cutter software
+// finds them where it expects.
 function sheetMarks (pageW, pageH, insetPt = MARK_INSET_PT) {
   const i = clampInset(insetPt)
   const len = MARK_LENGTH_PT
+  const wd = MARK_WIDTH_PT
   const t = MARK_TICK_PT
-  const midY = pageH / 2
+  const top = MARK_TOP_BASE_PT - i
+  const r = (x, y, w, h) => ({ x, y, w, h })
   return [
-    [[i, i + len], [i, i], [i + len, i]],
-    [[pageW - i - len, i], [pageW - i, i], [pageW - i, i + len]],
-    [[i, midY - len / 2], [i, midY + len / 2]],
-    [[i, midY], [i + t, midY]],
-    [[pageW - i, midY - len / 2], [pageW - i, midY + len / 2]],
-    [[pageW - i, midY], [pageW - i - t, midY]]
+    // Bottom-left L.
+    r(i, i, wd, len), r(i, i, len, wd),
+    // Bottom-right L.
+    r(pageW - i - wd, i, wd, len), r(pageW - i - len, i, len, wd),
+    // Left bar, tick pointing in; the tick's lower edge is the bar's midpoint.
+    r(i, top - len, wd, len), r(i, top - len / 2, t, wd),
+    // Right bar, mirrored.
+    r(pageW - i - wd, top - len, wd, len), r(pageW - i - t, top - len / 2, t, wd)
   ]
 }
 
@@ -455,10 +465,10 @@ function sheetMargins ({ marks = false, header = false, insetPt = MARK_INSET_PT,
   const m = { top: SHEET_MARGIN_PT, right: SHEET_MARGIN_PT, bottom: SHEET_MARGIN_PT, left: SHEET_MARGIN_PT }
   if (marks) {
     const inset = clampInset(insetPt)
-    const side = inset + MARK_TICK_PT + MARK_WIDTH_PT / 2 + MARK_CLEAR_PT
+    const side = inset + MARK_TICK_PT + MARK_CLEAR_PT
     m.left = side
     m.right = side
-    m.bottom = inset + MARK_WIDTH_PT / 2 + MARK_CLEAR_PT
+    m.bottom = inset + MARK_WIDTH_PT + MARK_CLEAR_PT
   }
   if (header) m.top = SHEET_MARGIN_PT + clampHeaderHeight(headerHeightPt) + HEADER_GAP_PT
   return m
@@ -610,6 +620,7 @@ module.exports = {
   MARK_INSET_PT,
   MARK_WIDTH_PT,
   MARK_CLEAR_PT,
+  MARK_TOP_BASE_PT,
   HEADER_HEIGHT_PT,
   sheetMarks,
   clampInset,

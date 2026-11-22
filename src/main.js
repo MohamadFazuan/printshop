@@ -65,7 +65,7 @@ const {
   EXPORT_FORMATS, COLOUR_SPACES, CMYK_CAPABLE,
   renderSizeFor, aspectFor, pngSize, sizeToPoints, buildPdf, slugify, today,
   watermarkSvg, pixelCanvas, clip, classifyFailure, generateInstruction, upscalePlan,
-  stickerImageRect, stickerLayout, buildHeaderProof, HEADER_LAYOUTS
+  stickerImageRect, stickerLayout, buildHeaderProof, headerPreview, HEADER_LAYOUTS
 } = require('./core')
 const {
   CUT_KINDS, CUT_LABELS, BLEED_PT, MM, CONTOUR_OFFSETS_MM, DEFAULT_OFFSET_MM, SHEETS,
@@ -565,6 +565,19 @@ handle('header:test', async ({ values, sheet, markInsetMm }) => {
   return out
 })
 
+// Live preview of the header strip in Settings, from the same layout the PDF
+// uses. Null when the header is empty.
+handle('header:preview', async ({ values, sheet, markInsetMm }) => {
+  const header = await sheetHeaderData(values)
+  if (!header) return null
+  const key = SHEET_SIZES[sheet] && sheet !== 'single' ? sheet : 'a4'
+  const preview = await headerPreview(key, header, { marks: true, insetPt: clampInset(Number(markInsetMm || 10) * MM) })
+  if (preview.logo) preview.logo.href = `data:image/png;base64,${header.logo.toString('base64')}`
+  // Bytes, not a URL: the renderer loads them with FontFace, which the CSP allows.
+  if (header.fontBytes) preview.fontBytes = new Uint8Array(header.fontBytes)
+  return preview
+})
+
 handle('settings:pickIcc', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
@@ -1036,7 +1049,7 @@ handle('cut:preview', async ({ file, size, fitMode, cut }) => {
 // Whole-sheet thumbnail data: cell boxes, marks and the header strip, in SVG coordinates.
 function sheetPreview (layout, geometry) {
   const H = layout.pageH
-  const marks = layout.marks.map((line) => line.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)} ${(H - y).toFixed(1)}`).join('')).join('')
+  const marks = layout.marks.map((m) => `M${m.x.toFixed(2)} ${(H - m.y - m.h).toFixed(2)}h${m.w.toFixed(2)}v${m.h.toFixed(2)}h${(-m.w).toFixed(2)}z`).join('')
   return {
     pageW: layout.pageW,
     pageH: H,
