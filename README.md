@@ -156,6 +156,7 @@ The log is Codex's own event stream (`codex exec --json`), so a stall shows its 
   red-mountain-poster-a1b2-A4-PROOF.pdf     export: watermarked
   red-mountain-poster-a1b2-A4-CMYK.tiff     export: CMYK separation
   red-mountain-poster-a1b2-Sticker5050mm-CUT-A3SHEET-MARKS.pdf   sticker sheet with cut lines + cutting marks
+  red-mountain-poster-a1b2-Sticker5050mm-CUT-A3SHEET-MARKS-HEADER.pdf   … plus the shop header
 ```
 
 Filenames carry the colour space and watermark, so a proof can never quietly overwrite the press-ready file. An export that would land on an existing name gets `-2`, `-3` instead of replacing it. Change the output folder in Settings. **Nothing is ever deleted.** 🗄️

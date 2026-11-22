@@ -1096,6 +1096,8 @@ handle('export:save', async ({ file, size, fitMode, format, colour, watermark, u
     if (cutGeometry.sheet !== 'single') parts.push(`${cutGeometry.sheet.toUpperCase()}SHEET`)
     if (cutGeometry.sheet !== 'single' && cutGeometry.pattern === 'staggered') parts.push('STAGGER')
     if (cutGeometry.marks) parts.push('MARKS')
+    // Only when a header actually prints; ticked but empty in Settings is not one.
+    if (cutGeometry.header) parts.push('HEADER')
   }
   if (watermark && watermark.text) {
     parts.push(watermark.text.replace(/[^a-zA-Z0-9]+/g, '').slice(0, 12).toUpperCase() || 'WM')
