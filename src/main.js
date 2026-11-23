@@ -72,6 +72,7 @@ const {
   subjectMask, contourCutPath, fitContourRect, shapeCutPath, pathToSvg,
   clampInset, MARK_INSET_PT, MARK_INSET_MIN_MM, MARK_INSET_MAX_MM, clampHeaderHeight, SHEETS: SHEET_SIZES
 } = require('./cutline')
+const { verifyLicence, featuresForCut, featuresForExport, assertAllowed, WHATSAPP } = require('./licence')
 
 // ---------------------------------------------------------------------------
 // Settings. The key is encrypted at rest and never leaves the main process.
@@ -91,6 +92,38 @@ async function readConfig () {
   } catch {
     return { outputDir: defaultOutputDir() }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Licence. The key sits in userData as plain text: it is a signed token, not a
+// secret, and verifying it needs no network. Every IPC handler that generates
+// or exports checks it here, so a modified renderer cannot unlock anything.
+// ---------------------------------------------------------------------------
+
+let licence = null
+
+function licencePath () {
+  return path.join(app.getPath('userData'), 'licence.key')
+}
+
+async function loadLicence () {
+  try {
+    licence = verifyLicence(await fs.readFile(licencePath(), 'utf8'))
+  } catch {
+    licence = null
+  }
+}
+
+// Seam for the per-key machine limit (a Cloudflare Worker counting machine IDs).
+// Not built yet: every valid key activates.
+async function activateMachine (_licence) {
+  return true
+}
+
+function licenceInfo () {
+  if (!licence) return null
+  const { email, name, tier, tierLabel, machines, issued, features, id } = licence
+  return { email, name, tier, tierLabel, machines, issued, features, id }
 }
 
 async function writeConfig (config) {
@@ -443,6 +476,7 @@ handle('codex:logout', async () => {
 })
 
 handle('codex:enhance', async ({ brief, size }) => {
+  assertAllowed(licence)
   if (!brief || !brief.trim()) throw new Error('Write a brief first — Codex needs something to work from.')
   const config = await readConfig()
   const found = await findCodex(config.codexPath)
@@ -552,6 +586,7 @@ handle('settings:pickFont', async () => {
 
 // Prints the header, as typed in Settings, on a blank sheet and opens it.
 handle('header:test', async ({ values, sheet, markInsetMm }) => {
+  assertAllowed(licence, ['sheets'])
   const header = await sheetHeaderData(values)
   if (!header) throw new Error('The header is empty. Fill in at least a shop name, phone, QR link or logo.')
   const key = SHEET_SIZES[sheet] && sheet !== 'single' ? sheet : 'a4'
@@ -696,6 +731,8 @@ async function assertReadable (file) {
 }
 
 handle('image:generate', async ({ prompt, size, count, referencePaths, referencePath, cut }) => {
+  // cut here is only the kind: a contour asks Codex for a plain white background.
+  assertAllowed(licence, cut && cut !== 'none' ? ['cut'] : [])
   if (!prompt || !prompt.trim()) throw new Error('Prompt is empty.')
   // referencePath is the single-reference payload an older renderer sends.
   const refs = [...new Set((Array.isArray(referencePaths) ? referencePaths : [referencePath])
@@ -1018,6 +1055,7 @@ async function cutFor (file, size, fitMode, cut) {
 }
 
 handle('cut:preview', async ({ file, size, fitMode, cut }) => {
+  assertAllowed(licence, featuresForCut(cut))
   const geometry = await cutFor(file, size, fitMode, cut)
   if (!geometry) return null
   const meta = await sharp(file).metadata()
@@ -1064,6 +1102,7 @@ function sheetPreview (layout, geometry) {
 }
 
 handle('export:save', async ({ file, size, fitMode, format, colour, watermark, upscale, cut }) => {
+  assertAllowed(licence, featuresForExport({ cut, upscale, colour, format }))
   if (!EXPORT_FORMATS.includes(format)) throw new Error(`Unknown format: ${format}`)
   if (colour === 'cmyk' && !CMYK_CAPABLE.includes(format)) {
     throw new Error(`${format.toUpperCase()} cannot hold CMYK. Choose ${CMYK_CAPABLE.join(', ').toUpperCase()}.`)
@@ -1143,6 +1182,26 @@ handle('export:save', async ({ file, size, fitMode, format, colour, watermark, u
   }
 })
 
+handle('licence:get', async () => licenceInfo())
+
+handle('licence:set', async ({ key }) => {
+  const next = verifyLicence(key)
+  if (!await activateMachine(next)) throw new Error('This key is already in use on its limit of computers. Message us on WhatsApp to move it.')
+  await fs.mkdir(path.dirname(licencePath()), { recursive: true })
+  await fs.writeFile(licencePath(), next.key + '\n', 'utf8')
+  licence = next
+  return licenceInfo()
+})
+
+// Fixed destination: the renderer picks the message, never the URL.
+handle('licence:buy', async ({ upgrade } = {}) => {
+  const text = upgrade
+    ? `Salam, saya nak naik taraf Printshop ke Pro (RM 30).${licence ? ` Lesen: ${licence.id}` : ''}`
+    : 'Salam, saya nak beli Printshop.'
+  await shell.openExternal(`${WHATSAPP}?text=${encodeURIComponent(text)}`)
+  return true
+})
+
 handle('shell:reveal', async ({ target }) => {
   const error = await shell.openPath(target)
   if (error) throw new Error(error)
@@ -1171,7 +1230,8 @@ function createWindow () {
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await loadLicence()
   createWindow()
   prunePastedReferences()
   app.on('activate', () => {

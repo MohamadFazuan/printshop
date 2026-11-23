@@ -42,10 +42,21 @@ Signing removes both warnings and costs an Apple Developer membership plus a Win
 
 Printshop has **no server, no accounts and no API keys anywhere in it**. 🔐
 
-Two things must be true on the machine:
+Three things must be true on the machine:
 
-1. ✅ Codex CLI installed
-2. ✅ `codex login` done — or press **Sign in to Codex** in Settings
+1. ✅ A licence key, pasted on the screen Printshop opens with
+2. ✅ Codex CLI installed
+3. ✅ `codex login` done — or press **Sign in to Codex** in Settings
+
+### 🔑 Licence
+
+| Tier | Price | Unlocks |
+|---|---|---|
+| Basic | RM 20 once | Generate, image references, all 65 sizes, PDF / PNG / JPEG in RGB, watermark |
+| Pro | RM 50 once (RM 30 from Basic) | Basic plus cut lines, sticker sheets (marks, header), AI upscale, CMYK and TIFF |
+| Custom | Quote | Same as Pro, several computers |
+
+The key is checked offline against a public key built into the app, so Printshop keeps working without internet. Without one, Generate and Export stay locked; **Buy on WhatsApp** opens a chat. On Basic, Pro controls stay visible but switched off, with an upgrade link. Settings shows the tier and email, and **Change key** swaps it. The checks run in the main process for every generate, preview and export, not only in the screen.
 
 Without Codex the app says so on the main screen, up front, rather than failing the moment you press Generate.
 
@@ -171,6 +182,16 @@ npm run fetch-upscaler  # Real-ESRGAN into vendor/ (~50 MB, SHA-256 checked); sk
 npm start       # run the app
 npm run verify  # headless checks on size, aspect, PDF and brief logic — no network
 ```
+
+Issue licence keys (bank transfer, by hand). The script is not shipped in the app:
+
+```bash
+node scripts/licence.js keygen     # once: private key to ~/.printshop-licensing/, prints PUBLIC_KEY for src/licence.js
+node scripts/licence.js issue --email buyer@example.com --tier pro --name "Kedai Cetak"   # basic | pro | custom [--machines n]
+node scripts/licence.js verify PS1.…
+```
+
+Back up `~/.printshop-licensing/licence-private.pem`. Lose it and every key has to be reissued with a new app build.
 
 Build an installer locally:
 

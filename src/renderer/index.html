@@ -83,6 +83,7 @@
       <label class="field" id="cutOffsetField" hidden><span>White border</span><select id="cutOffset"></select></label>
     </div>
     <output id="cutNote" class="muted small" hidden></output>
+    <p class="pro-note small" hidden>Cut lines and sticker sheets: Pro feature. <button type="button" class="link upgrade">Upgrade for RM 30</button></p>
 
     <p id="shapeNote" class="banner warn" hidden></p>
 
@@ -186,6 +187,7 @@
     </label>
 
     <output id="upscaleNote" class="muted small upscale-note" hidden></output>
+    <p class="pro-note small" hidden>AI upscale, CMYK and TIFF: Pro feature. <button type="button" class="link upgrade">Upgrade for RM 30</button></p>
 
     <div class="actions">
       <output id="selectedLabel" class="muted">Nothing selected</output>
@@ -211,6 +213,14 @@
 <div id="settingsPane" class="overlay" hidden>
   <div class="card sheet">
     <h2>Settings</h2>
+
+    <div class="licence-row">
+      <p class="small"><span class="muted">Licence</span><br><b id="licenceSummary">—</b></p>
+      <span class="btns">
+        <button id="upgradeFromSettings" class="ghost small" hidden>Upgrade to Pro</button>
+        <button id="changeLicence" class="ghost small">Change key</button>
+      </span>
+    </div>
 
     <label class="field">
       <span>Output folder</span>
@@ -352,6 +362,26 @@
     </span>
   </div>
   <img id="lightboxImg" alt="">
+</div>
+
+<div id="licencePane" class="overlay licence-pane" hidden>
+  <div class="card sheet">
+    <h2>Activate Printshop</h2>
+    <p class="muted">Paste the licence key you received after payment. It starts with <span class="mono">PS1.</span></p>
+    <label class="field">
+      <span>Licence key</span>
+      <textarea id="licenceKey" rows="4" spellcheck="false" autocomplete="off" class="mono"></textarea>
+    </label>
+    <p id="licenceError" class="error" hidden></p>
+    <div class="actions">
+      <button id="cancelLicence" class="ghost" hidden>Cancel</button>
+      <span class="btns">
+        <button id="buyLicence" class="ghost">Buy on WhatsApp</button>
+        <button id="activateLicence">Activate</button>
+      </span>
+    </div>
+    <p class="muted small">Basic RM 20 · Pro RM 50, one-time. No key yet? Message us on WhatsApp for a demo or to buy; the key arrives after payment.</p>
+  </div>
 </div>
 
 <script src="app.js"></script>

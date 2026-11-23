@@ -814,6 +814,78 @@ test('artwork drawn to the edge is shrunk so its border still fits', () => {
   assert.equal(cutline.fitContourRect({ mask: small, width: w, height: w }, rect, 5, { w: 100, h: 100 }).scale, 1)
 })
 
+// --- Licence ---------------------------------------------------------------
+
+const licence = require('../src/licence')
+const nodeCrypto = require('node:crypto')
+const testKeys = () => {
+  const { publicKey, privateKey } = nodeCrypto.generateKeyPairSync('ed25519')
+  return { privateKey, pub: publicKey.export({ format: 'jwk' }).x }
+}
+
+test('a signed licence key verifies offline and carries its tier', () => {
+  const { privateKey, pub } = testKeys()
+  const key = licence.signLicence({ email: 'kedai@example.com', tier: 'pro', name: 'Kedai Cetak', issued: '2026-11-23', id: 'abcd1234' }, privateKey)
+  assert.match(key, /^PS1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/)
+  const got = licence.verifyLicence(key, pub)
+  assert.equal(got.email, 'kedai@example.com')
+  assert.equal(got.tier, 'pro')
+  assert.equal(got.machines, 1)
+  assert.equal(got.issued, '2026-11-23')
+  assert.deepEqual(got.features, ['cut', 'sheets', 'upscale', 'cmyk'])
+  // Pasted from WhatsApp: wrapped across lines, padded with spaces.
+  const wrapped = `  ${key.slice(0, 40)}\n${key.slice(40, 90)} \r\n${key.slice(90)}  `
+  assert.equal(licence.verifyLicence(wrapped, pub).id, 'abcd1234')
+})
+
+test('a forged, tampered or foreign licence key is refused', () => {
+  const { privateKey, pub } = testKeys()
+  const key = licence.signLicence({ email: 'a@b.co', tier: 'basic' }, privateKey)
+  const [prefix, body, sig] = key.split('.')
+  // Upgrading yourself to Pro by editing the payload breaks the signature.
+  const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, 'base64url')), tier: 'pro' })).toString('base64url')
+  assert.throws(() => licence.verifyLicence(`${prefix}.${forged}.${sig}`, pub), /not valid/)
+  // Signed by somebody else's private key.
+  assert.throws(() => licence.verifyLicence(key, testKeys().pub), /not valid/)
+  // Not a key at all.
+  for (const junk of ['', 'hello', 'PS2.a.b', `${prefix}.${body}`]) assert.throws(() => licence.verifyLicence(junk, pub), /not a Printshop licence key/)
+  assert.throws(() => licence.verifyLicence(`${prefix}.${body}.${sig.slice(0, -4)}`, pub), /not valid/)
+  // A key for a tier this version does not know asks for an update.
+  const future = Buffer.from(JSON.stringify({ v: 2, tier: 'enterprise', email: 'a@b.co' })).toString('base64url')
+  const futureSig = nodeCrypto.sign(null, Buffer.from(`PS1.${future}`), privateKey).toString('base64url')
+  assert.throws(() => licence.verifyLicence(`PS1.${future}.${futureSig}`, pub), /newer Printshop/)
+  assert.throws(() => licence.signLicence({ email: 'a@b.co', tier: 'gold' }, privateKey), /Unknown tier/)
+  assert.throws(() => licence.signLicence({ email: '', tier: 'pro' }, privateKey), /email/)
+})
+
+test('Basic has no Pro features; Pro and Custom have all four', () => {
+  assert.deepEqual(licence.TIERS.basic.features, [])
+  for (const tier of ['pro', 'custom']) assert.deepEqual(licence.TIERS[tier].features, ['cut', 'sheets', 'upscale', 'cmyk'])
+  // The key the app ships with is a real Ed25519 public key.
+  assert.equal(Buffer.from(licence.PUBLIC_KEY, 'base64url').length, 32)
+  assert.ok(nodeCrypto.createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: licence.PUBLIC_KEY }, format: 'jwk' }))
+})
+
+test('each export asks for exactly the Pro features it uses', () => {
+  const f = licence.featuresForExport
+  assert.deepEqual(f({ format: 'pdf', colour: 'rgb' }), [])
+  assert.deepEqual(f({ format: 'png', colour: 'rgb', watermark: { text: 'PROOF' } }), [])
+  assert.deepEqual(f({ format: 'pdf', colour: 'rgb', cut: { kind: 'circle', sheet: 'single' } }), ['cut'])
+  assert.deepEqual(f({ format: 'pdf', colour: 'rgb', cut: { kind: 'contour', sheet: 'a4' } }), ['cut', 'sheets'])
+  assert.deepEqual(f({ format: 'pdf', colour: 'rgb', cut: { kind: 'none', sheet: 'a4' } }), [])
+  assert.deepEqual(f({ format: 'pdf', colour: 'rgb', upscale: true }), ['upscale'])
+  assert.deepEqual(f({ format: 'pdf', colour: 'cmyk' }), ['cmyk'])
+  assert.deepEqual(f({ format: 'tiff', colour: 'rgb' }), ['cmyk'])
+
+  const basic = { features: [] }
+  const pro = { features: licence.PRO_FEATURES }
+  assert.throws(() => licence.assertAllowed(null), /not activated/)
+  assert.doesNotThrow(() => licence.assertAllowed(basic, []))
+  assert.throws(() => licence.assertAllowed(basic, ['cut']), /Cut lines is a Pro feature\. Upgrade for RM 30/)
+  assert.throws(() => licence.assertAllowed(basic, f({ format: 'tiff' })), /CMYK and TIFF export is a Pro feature/)
+  assert.doesNotThrow(() => licence.assertAllowed(pro, f({ format: 'pdf', colour: 'cmyk', upscale: true, cut: { kind: 'circle', sheet: 'a3' } })))
+})
+
 // --- Runner ----------------------------------------------------------------
 
 ;(async () => {

@@ -335,3 +335,11 @@ input:not([type="checkbox"]):not([type="radio"]), select { height: 36px; }
 .header-preview figcaption.warn { color: var(--warn); }
 
 .radio.inset input { width: 56px; }
+
+/* Licence */
+.licence-pane { z-index: 50; background: rgba(255, 255, 255, 0.98); }
+.licence-pane textarea { width: 100%; resize: vertical; }
+.licence-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0 12px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.licence-row p { margin: 0; }
+.pro-note { margin: 6px 0 0; color: var(--warn); }
+button.link { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; font: inherit; cursor: pointer; }

@@ -13,6 +13,7 @@ let codexFound = null
 let upscaleAvailable = false
 let exporting = false
 let references = []
+let licence = null
 const MAX_REFERENCES = 4
 
 // ---------------------------------------------------------------------------
@@ -226,6 +227,7 @@ function drawSheetPreview (p, el) {
 // PNG is RGB-only by spec, and CMYK needs a profile — say which, not just "no".
 function refreshExportOptions () {
   if (!catalog) return
+  lockProChoices()
   refreshCut()
   const format = picked('format')
   const colour = picked('colour')
@@ -251,6 +253,76 @@ function refreshExportOptions () {
   else if (picked('colour') === 'cmyk' && !settings?.iccPath) note.push('Set a CMYK profile in Settings before exporting')
   else if (picked('colour') === 'cmyk') note.push(`Using ${settings.iccPath.split('/').pop()}`)
   $('colourNote').textContent = note.join(' · ')
+  disableProControls()
+}
+
+// ---------------------------------------------------------------------------
+// Licence. Main checks every generate and export too; this only keeps Basic
+// from picking what main would refuse, and says why.
+// ---------------------------------------------------------------------------
+
+function isPro () {
+  return Boolean(licence && licence.features.includes('cut'))
+}
+
+// Before the options are read: a Basic licence never has a Pro choice selected.
+function lockProChoices () {
+  if (isPro()) return
+  $('cutKind').value = 'none'
+  document.querySelector('input[name="resolution"][value="original"]').checked = true
+  document.querySelector('input[name="colour"][value="rgb"]').checked = true
+  if (picked('format') === 'tiff') document.querySelector('input[name="format"][value="pdf"]').checked = true
+}
+
+// After the other rules have set what is enabled: switch the Pro controls off.
+function disableProControls () {
+  const basic = !isPro()
+  for (const note of document.querySelectorAll('.pro-note')) note.hidden = !basic
+  if (!basic) return
+  $('cutKind').disabled = true
+  document.querySelector('input[name="resolution"][value="ai"]').disabled = true
+  $('colourCmyk').disabled = true
+  document.querySelector('input[name="format"][value="tiff"]').disabled = true
+  $('upscaleNote').hidden = true
+}
+
+function showLicence (summary) {
+  licence = summary
+  $('licenceSummary').textContent = licence
+    ? `${licence.tierLabel}${licence.name ? ` · ${licence.name}` : ''} · ${licence.email}${licence.issued ? ` · since ${licence.issued}` : ''}`
+    : 'Not activated'
+  $('upgradeFromSettings').hidden = !licence || isPro()
+  $('cutKind').disabled = false
+  for (const id of ['ai', 'original']) document.querySelector(`input[name="resolution"][value="${id}"]`).disabled = false
+  document.querySelector('input[name="format"][value="tiff"]').disabled = false
+  refreshExportOptions()
+  updateCutPreview()
+}
+
+function openLicencePane (canCancel) {
+  $('licenceKey').value = ''
+  hide($('licenceError'))
+  $('cancelLicence').hidden = !canCancel
+  $('licencePane').hidden = false
+  $('licenceKey').focus()
+}
+
+$('activateLicence').addEventListener('click', async () => {
+  const button = $('activateLicence')
+  button.disabled = true
+  try {
+    showLicence(unwrap(await api.setLicence({ key: $('licenceKey').value }), $('licenceError')))
+    $('licencePane').hidden = true
+  } catch { /* shown in licenceError */ } finally {
+    button.disabled = false
+  }
+})
+$('cancelLicence').addEventListener('click', () => { $('licencePane').hidden = true })
+$('buyLicence').addEventListener('click', () => api.buyLicence({ upgrade: Boolean(licence) }))
+$('changeLicence').addEventListener('click', () => openLicencePane(Boolean(licence)))
+$('upgradeFromSettings').addEventListener('click', () => api.buyLicence({ upgrade: true }))
+for (const button of document.querySelectorAll('.pro-note .upgrade')) {
+  button.addEventListener('click', () => api.buyLicence({ upgrade: true }))
 }
 
 // Exact: scale is points-per-pixel once the image is placed on the page.
@@ -360,6 +432,8 @@ async function boot () {
   for (const u of catalog.units) $('customUnit').append(new Option(u, u))
   $('customUnit').value = 'mm'
 
+  showLicence(unwrap(await api.licence()))
+  if (!licence) openLicencePane(false)
   await loadSettings()
   await detectCodex()
   await refreshCodexLogin()
