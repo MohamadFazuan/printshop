@@ -27,9 +27,12 @@ Done as: session allowlist of job folders (`jobDirs` in `src/main.js`, checks in
 
 ## Phase 2 — Licence integrity & core UX
 
-- [ ] **5. Electron fuses** (`@electron/fuses` in an electron-builder `afterPack` hook)
-  - `EnableEmbeddedAsarIntegrityValidation`, `OnlyLoadAppFromAsar`, `RunAsNode=false`, `EnableNodeCliInspectArguments=false`.
-  - Purpose: stop casual edits to `app.asar` that unlock Pro.
+- [x] **5. Electron fuses** (native `electronFuses` in electron-builder 26, no extra dependency)
+  - On: `runAsNode=false`, `enableNodeOptionsEnvironmentVariable=false`, `enableNodeCliInspectArguments=false`, `enableEmbeddedAsarIntegrityValidation`, `onlyLoadAppFromAsar`, `resetAdHocDarwinSignature`.
+  - Verified on a local arm64 build: launches, IPC + upscaler work, a byte-patched `app.asar` is refused (`ASAR Integrity Violation`).
+  - `resetAdHocDarwinSignature` is required: without it the unsigned arm64 app is SIGKILLed (`Code Signature Invalid`) at launch.
+  - `grantFileProtocolExtraPrivileges` stays on: turning it off makes `loadFile` from `app.asar` fail (`chrome-error://`). Follow-up: serve the renderer over a custom `app://` protocol, then turn it off.
+  - Limit: while builds are unsigned, someone can also rewrite the hash in `Info.plist`. Integrity becomes strong only with signing (item 8).
 - [ ] **11. Cancel button** for generate and upscale
   - Track the running child process; new IPC `job:cancel` calls the existing `killTree`; clean up an empty job folder.
 - [ ] **13. First-run checklist**: licence → Codex installed → Codex signed in, all on one screen with ticks.
