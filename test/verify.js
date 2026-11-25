@@ -918,6 +918,80 @@ test('the Codex path field accepts only the codex program itself', () => {
   assert.equal(guard.isCodexPath(undefined), false)
 })
 
+// A fake disk for checkCodexBinary: path → { mode, uid, link?, dir? }.
+function fakeFs (entries) {
+  const get = (p) => {
+    const e = entries[p]
+    if (!e) throw Object.assign(new Error(`ENOENT ${p}`), { code: 'ENOENT' })
+    return e
+  }
+  const resolve = (p) => (entries[p] && entries[p].link ? resolve(entries[p].link) : p)
+  const asStat = (e) => ({ mode: e.mode, uid: e.uid, isFile: () => !e.dir && !e.link, isSymbolicLink: () => Boolean(e.link) })
+  return {
+    realpath: async (p) => resolve(get(p) && p),
+    stat: async (p) => asStat(get(resolve(p))),
+    lstat: async (p) => asStat(get(p))
+  }
+}
+
+test('a Codex binary is run only from a folder no other account can change', async () => {
+  const me = 501
+  const disk = fakeFs({
+    // Homebrew: a link in bin to a script in node_modules, all the user's own.
+    '/opt/homebrew/bin': { dir: true, mode: 0o40755, uid: me },
+    '/opt/homebrew/bin/codex': { link: '/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js', mode: 0o120777, uid: me },
+    '/opt/homebrew/lib/node_modules/@openai/codex/bin': { dir: true, mode: 0o40755, uid: me },
+    '/opt/homebrew/lib/node_modules/@openai/codex/bin/codex.js': { mode: 0o100755, uid: me },
+    // System install, owned by root.
+    '/usr/local/bin': { dir: true, mode: 0o40755, uid: 0 },
+    '/usr/local/bin/codex': { mode: 0o100755, uid: 0 },
+    // Planted in the shared temp folder.
+    '/tmp': { dir: true, mode: 0o41777, uid: 0 },
+    '/tmp/codex': { mode: 0o100755, uid: 502 },
+    // A safe-looking link that points at something anyone can rewrite.
+    '/Users/me/bin': { dir: true, mode: 0o40755, uid: me },
+    '/Users/me/bin/codex': { link: '/tmp/payload', mode: 0o120755, uid: me },
+    '/tmp/payload': { mode: 0o100777, uid: 502 },
+    // Another account's home.
+    '/Users/other/bin': { dir: true, mode: 0o40755, uid: 502 },
+    '/Users/other/bin/codex': { mode: 0o100755, uid: 502 },
+    // Exists but is a folder.
+    '/Users/me/codex': { dir: true, mode: 0o40755, uid: me },
+    '/Users': { dir: true, mode: 0o40755, uid: 0 }
+  })
+  const check = (value) => guard.checkCodexBinary(value, { platform: 'darwin', uid: me, ...disk })
+
+  assert.equal(await check('/opt/homebrew/bin/codex'), '/opt/homebrew/bin/codex') // typed path, not the script
+  assert.equal(await check('/usr/local/bin/codex'), '/usr/local/bin/codex')
+  await assert.rejects(check('/tmp/codex'), /any account on this computer can change it/)
+  await assert.rejects(check('/Users/me/bin/codex'), /\/tmp/)
+  await assert.rejects(check('/Users/other/bin/codex'), /belongs to another account/)
+  await assert.rejects(check('/Users/me/codex'), /not a program file/)
+  await assert.rejects(check('/Users/me/nothing/codex'), /There is no program/)
+  await assert.rejects(check('/bin/sh'), /full path to the codex program/)
+})
+
+test('on Windows a Codex binary must live under the user profile or Program Files', async () => {
+  const file = { mode: 0o100666, uid: 0 }
+  const disk = fakeFs({
+    'C:\\Users\\shop\\AppData\\Roaming\\npm\\codex.cmd': file,
+    'C:\\Program Files\\codex\\codex.exe': file,
+    'D:\\Shared\\codex.exe': file,
+    'C:\\Users\\Public\\Programs-evil\\codex.exe': file
+  })
+  const check = (value) => guard.checkCodexBinary(value, {
+    platform: 'win32',
+    uid: null,
+    home: 'C:\\Users\\shop',
+    env: { APPDATA: 'C:\\Users\\shop\\AppData\\Roaming', ProgramFiles: 'C:\\Program Files' },
+    ...disk
+  })
+  assert.equal(await check('C:\\Users\\shop\\AppData\\Roaming\\npm\\codex.cmd'), 'C:\\Users\\shop\\AppData\\Roaming\\npm\\codex.cmd')
+  assert.equal(await check('C:\\Program Files\\codex\\codex.exe'), 'C:\\Program Files\\codex\\codex.exe')
+  await assert.rejects(check('D:\\Shared\\codex.exe'), /user folder or Program Files/)
+  await assert.rejects(check('C:\\Users\\Public\\Programs-evil\\codex.exe'), /user folder or Program Files/)
+})
+
 // --- Runner ----------------------------------------------------------------
 
 ;(async () => {

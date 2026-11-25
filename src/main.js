@@ -73,7 +73,7 @@ const {
   clampInset, MARK_INSET_PT, MARK_INSET_MIN_MM, MARK_INSET_MAX_MM, clampHeaderHeight, SHEETS: SHEET_SIZES
 } = require('./cutline')
 const { verifyLicence, featuresForCut, featuresForExport, assertAllowed, WHATSAPP } = require('./licence')
-const { isJobVariant, isCodexPath } = require('./guard')
+const { isJobVariant, checkCodexBinary } = require('./guard')
 
 // ---------------------------------------------------------------------------
 // Job folders made this session. Every handler that reads, writes beside or
@@ -287,9 +287,10 @@ async function codexOnPath () {
 
 async function findCodex (override) {
   const tried = new Set()
-  // A saved override that is not plainly Codex (an older config, or one a
-  // compromised renderer wrote) is skipped rather than executed.
-  const custom = isCodexPath(override) ? override : null
+  // A saved override is checked again here, not only on save: config.json may
+  // predate the check, and the file it names can change after it was saved.
+  // One that fails is skipped rather than executed.
+  const custom = override ? await checkCodexBinary(override).catch(() => null) : null
   for (const raw of [custom, ...(await codexOnPath()), ...CODEX_CANDIDATES, ...(await nvmCandidates())]) {
     if (!raw) continue
     for (const bin of unshim(raw)) {
@@ -566,9 +567,7 @@ handle('settings:save', async (payload) => {
   if (outputDir) config.outputDir = outputDir
   if (typeof codexPath === 'string') {
     const trimmed = codexPath.trim()
-    if (trimmed && !isCodexPath(trimmed)) {
-      throw new Error('The Codex path must be the full path to the codex program itself, for example /opt/homebrew/bin/codex or C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd.')
-    }
+    if (trimmed) await checkCodexBinary(trimmed)
     config.codexPath = trimmed
   }
   if (typeof iccPath === 'string') config.iccPath = iccPath.trim()
