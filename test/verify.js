@@ -886,6 +886,38 @@ test('each export asks for exactly the Pro features it uses', () => {
   assert.doesNotThrow(() => licence.assertAllowed(pro, f({ format: 'pdf', colour: 'cmyk', upscale: true, cut: { kind: 'circle', sheet: 'a3' } })))
 })
 
+// --- Renderer path guards ---------------------------------------------------
+// The renderer is untrusted; these decide which of its paths main will touch.
+
+const guard = require('../src/guard')
+
+test('only a .png directly in a job folder made this session is a variant', () => {
+  const job = path.resolve('/out/2026-11-25/cat-ab12')
+  const jobs = new Set([job])
+  assert.equal(guard.isJobVariant(jobs, path.join(job, '01.png')), true)
+  assert.equal(guard.isJobVariant(jobs, path.join(job, '01.PNG')), true)
+  assert.equal(guard.isJobVariant(jobs, path.join(job, '..', 'other', '01.png')), false)
+  assert.equal(guard.isJobVariant(jobs, path.join(job, 'upscaled', '01.png')), false)
+  assert.equal(guard.isJobVariant(jobs, path.join(job, 'export.pdf')), false)
+  assert.equal(guard.isJobVariant(jobs, path.resolve('/etc/hosts.png')), false)
+  assert.equal(guard.isJobVariant(jobs, ''), false)
+  assert.equal(guard.isJobVariant(jobs, null), false)
+  assert.equal(guard.isJobVariant(new Set(), path.join(job, '01.png')), false)
+})
+
+test('the Codex path field accepts only the codex program itself', () => {
+  const abs = (...parts) => path.resolve('/', ...parts)
+  assert.equal(guard.isCodexPath(abs('opt', 'homebrew', 'bin', 'codex')), true)
+  assert.equal(guard.isCodexPath(abs('npm', 'codex.cmd')), true)
+  assert.equal(guard.isCodexPath(abs('bin', 'codex.exe')), true)
+  assert.equal(guard.isCodexPath('codex'), false) // relative: resolved against who knows what
+  assert.equal(guard.isCodexPath(abs('bin', 'sh')), false)
+  assert.equal(guard.isCodexPath(abs('Applications', 'Calculator.app')), false)
+  assert.equal(guard.isCodexPath(abs('tmp', 'codex-evil')), false)
+  assert.equal(guard.isCodexPath(''), false)
+  assert.equal(guard.isCodexPath(undefined), false)
+})
+
 // --- Runner ----------------------------------------------------------------
 
 ;(async () => {

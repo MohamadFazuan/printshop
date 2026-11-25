@@ -73,6 +73,25 @@ const {
   clampInset, MARK_INSET_PT, MARK_INSET_MIN_MM, MARK_INSET_MAX_MM, clampHeaderHeight, SHEETS: SHEET_SIZES
 } = require('./cutline')
 const { verifyLicence, featuresForCut, featuresForExport, assertAllowed, WHATSAPP } = require('./licence')
+const { isJobVariant, isCodexPath } = require('./guard')
+
+// ---------------------------------------------------------------------------
+// Job folders made this session. Every handler that reads, writes beside or
+// opens a renderer-supplied path checks it against this set, so a compromised
+// renderer can only touch what the app itself generated. Real paths, so a
+// symlink cannot point a check at one place and the work at another.
+// ---------------------------------------------------------------------------
+
+const jobDirs = new Set()
+
+async function trustedVariant (file) {
+  let real
+  try { real = await fs.realpath(file) } catch { real = null }
+  if (!real || !isJobVariant(jobDirs, real)) {
+    throw new Error('That image is not one Printshop generated in this session. Generate it again, then export.')
+  }
+  return real
+}
 
 // ---------------------------------------------------------------------------
 // Settings. The key is encrypted at rest and never leaves the main process.
@@ -268,7 +287,10 @@ async function codexOnPath () {
 
 async function findCodex (override) {
   const tried = new Set()
-  for (const raw of [override, ...(await codexOnPath()), ...CODEX_CANDIDATES, ...(await nvmCandidates())]) {
+  // A saved override that is not plainly Codex (an older config, or one a
+  // compromised renderer wrote) is skipped rather than executed.
+  const custom = isCodexPath(override) ? override : null
+  for (const raw of [custom, ...(await codexOnPath()), ...CODEX_CANDIDATES, ...(await nvmCandidates())]) {
     if (!raw) continue
     for (const bin of unshim(raw)) {
       if (tried.has(bin)) continue
@@ -542,7 +564,13 @@ handle('settings:save', async (payload) => {
     if (typeof payload[key] === 'string' || typeof payload[key] === 'number') config[key] = typeof payload[key] === 'string' ? payload[key].trim() : payload[key]
   }
   if (outputDir) config.outputDir = outputDir
-  if (typeof codexPath === 'string') config.codexPath = codexPath.trim()
+  if (typeof codexPath === 'string') {
+    const trimmed = codexPath.trim()
+    if (trimmed && !isCodexPath(trimmed)) {
+      throw new Error('The Codex path must be the full path to the codex program itself, for example /opt/homebrew/bin/codex or C:\\Users\\you\\AppData\\Roaming\\npm\\codex.cmd.')
+    }
+    config.codexPath = trimmed
+  }
   if (typeof iccPath === 'string') config.iccPath = iccPath.trim()
   if (typeof watermarkText === 'string') config.watermarkText = watermarkText
   await writeConfig(config)
@@ -748,6 +776,7 @@ handle('image:generate', async ({ prompt, size, count, referencePaths, reference
 
   const jobDir = path.join(outputDir, today(), `${slugify(prompt)}-${crypto.randomBytes(2).toString('hex')}`)
   await fs.mkdir(jobDir, { recursive: true })
+  jobDirs.add(await fs.realpath(jobDir))
 
   emitProgress({ phase: 'start', total: n, renderSize, reference: refs.length ? refs.map((p) => path.basename(p)).join(', ') : null })
 
@@ -1056,6 +1085,7 @@ async function cutFor (file, size, fitMode, cut) {
 
 handle('cut:preview', async ({ file, size, fitMode, cut }) => {
   assertAllowed(licence, featuresForCut(cut))
+  file = await trustedVariant(file)
   const geometry = await cutFor(file, size, fitMode, cut)
   if (!geometry) return null
   const meta = await sharp(file).metadata()
@@ -1103,6 +1133,7 @@ function sheetPreview (layout, geometry) {
 
 handle('export:save', async ({ file, size, fitMode, format, colour, watermark, upscale, cut }) => {
   assertAllowed(licence, featuresForExport({ cut, upscale, colour, format }))
+  file = await trustedVariant(file)
   if (!EXPORT_FORMATS.includes(format)) throw new Error(`Unknown format: ${format}`)
   if (colour === 'cmyk' && !CMYK_CAPABLE.includes(format)) {
     throw new Error(`${format.toUpperCase()} cannot hold CMYK. Choose ${CMYK_CAPABLE.join(', ').toUpperCase()}.`)
@@ -1202,8 +1233,13 @@ handle('licence:buy', async ({ upgrade } = {}) => {
   return true
 })
 
+// Opens a job folder in Finder or Explorer. Only a folder this session made:
+// openPath on a renderer-chosen file would launch any program on the disk.
 handle('shell:reveal', async ({ target }) => {
-  const error = await shell.openPath(target)
+  let real
+  try { real = await fs.realpath(String(target || '')) } catch { real = null }
+  if (!real || !jobDirs.has(real)) throw new Error('That folder is not a Printshop job from this session.')
+  const error = await shell.openPath(real)
   if (error) throw new Error(error)
   return true
 })
@@ -1229,6 +1265,15 @@ function createWindow () {
   })
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
 }
+
+// The app is one local page with no links. Any attempt to navigate away, open
+// a window or attach a webview is a bug or an attack, so all are refused.
+app.on('web-contents-created', (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  contents.on('will-navigate', (event) => event.preventDefault())
+  contents.on('will-redirect', (event) => event.preventDefault())
+  contents.on('will-attach-webview', (event) => event.preventDefault())
+})
 
 app.whenReady().then(async () => {
   await loadLicence()
