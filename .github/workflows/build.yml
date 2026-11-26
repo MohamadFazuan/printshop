@@ -76,7 +76,8 @@ jobs:
           fail_on_unmatched_files: true
           draft: false
           body: |
-            Unsigned builds. macOS: right-click → Open the first time.
+            Unsigned builds. macOS, first launch only: click Done, then
+            System Settings → Privacy & Security → Open Anyway.
             Windows: More info → Run anyway.
 
             Each machine also needs the Codex CLI installed and signed in to a

@@ -320,7 +320,7 @@ function renderSetup () {
     : 'Paste the key you received on WhatsApp. No key yet? Buy one from the licence screen.')
   setupStep('stepInstall', Boolean(codexFound), codexFound
     ? (codexFound.check?.message || `Found ${codexFound.version}`)
-    : 'Printshop makes artwork through Codex CLI on your ChatGPT plan. Install it, then come back to this window.')
+    : 'Printshop makes artwork through Codex CLI on your ChatGPT plan. Codex settings shows the one line to install it.')
   setupStep('stepLogin', codexLoggedIn, codexLoggedIn
     ? 'Signed in'
     : codexFound ? 'Opens your browser to sign in with your ChatGPT account.' : 'Available once Codex is installed.',
@@ -346,6 +346,13 @@ window.addEventListener('focus', async () => {
   } finally {
     setupChecking = false
   }
+})
+
+$('copyCodexInstall').addEventListener('click', async () => {
+  const button = $('copyCodexInstall')
+  const result = await api.codexInstallCommand({ copy: true })
+  button.textContent = result.ok ? 'Copied' : 'Could not copy'
+  setTimeout(() => { button.textContent = 'Copy' }, 2000)
 })
 
 $('stepLicenceGo').addEventListener('click', () => openLicencePane(true))
@@ -529,6 +536,15 @@ async function detectCodex () {
   $('codexState').textContent = codexFound
     ? `Found ${codexFound.version} at ${codexFound.bin}`
     : 'Not found — install Codex CLI, or set its full path here.'
+
+  $('codexInstall').hidden = Boolean(codexFound)
+  if (!codexFound && !$('codexInstallCommand').textContent) {
+    const help = unwrap(await api.codexInstallCommand())
+    $('codexInstallCommand').textContent = help.command
+    $('codexInstallOpen').textContent = help.platform === 'win32'
+      ? 'Open PowerShell: press the Windows key, type PowerShell, press Enter.'
+      : 'Open Terminal: press ⌘ Space, type Terminal, press Enter.'
+  }
 
   const warning = $('codexWarning')
   if (codexFound?.check?.status === 'old' || codexFound?.check?.status === 'unknown') show(warning, codexFound.check.message)

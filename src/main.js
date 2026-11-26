@@ -288,7 +288,10 @@ const CODEX_CANDIDATES = process.platform === 'win32'
   ? [
       vendorExe(path.join(process.env.APPDATA || '', 'npm')),
       path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Links', 'codex.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'codex', 'codex.exe')
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'codex', 'codex.exe'),
+      // OpenAI's standalone installer (install.ps1). It adds this folder to the
+      // user PATH, but an app already running keeps the PATH it started with.
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe')
     ]
   : [
       '/opt/homebrew/bin/codex',
@@ -506,6 +509,18 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
   }
   return { files, shortfall: count - files.length, reason: fatalMessage || lastMessage, timedOut, cancelled }
 }
+
+// OpenAI's own one-line installers, which need no Node.js. Shown in Settings
+// when Codex is missing; the shop pastes it into Terminal or PowerShell. The
+// app only copies the text: it never downloads or runs an installer itself.
+const CODEX_INSTALL = process.platform === 'win32'
+  ? { shell: 'PowerShell', command: 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"' }
+  : { shell: 'Terminal', command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' }
+
+handle('codex:installCommand', async ({ copy } = {}) => {
+  if (copy) clipboard.writeText(CODEX_INSTALL.command)
+  return { ...CODEX_INSTALL, platform: process.platform }
+})
 
 handle('codex:detect', async () => {
   const config = await readConfig()

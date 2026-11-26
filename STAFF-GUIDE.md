@@ -6,9 +6,12 @@ Type what you want, pick the paper size, get a print file.
 
 ## First time only
 
-1. Install the app (right-click → **Open** the first time on Mac; on Windows click **More info → Run anyway**).
-2. Open **Settings** → check it says **Signed in**. If not, press **Sign in to Codex** and finish in the browser that opens.
-3. If your press uses a colour profile, press **Profile…** and pick the `.icc` file.
+1. Install the app. The first time only:
+   - **Mac:** if it says Apple *could not verify* Printshop, click **Done**, then **System Settings → Privacy & Security** → scroll down → **Open Anyway**, and enter the Mac password.
+   - **Windows:** if it says *Windows protected your PC*, click **More info → Run anyway**.
+2. Paste the licence key you received on WhatsApp.
+3. Open **Settings** → check it says **Signed in**. If not, press **Sign in to Codex** and finish in the browser that opens.
+4. If your press uses a colour profile, press **Profile…** and pick the `.icc` file.
 
 If Settings says *Codex CLI not found*, stop — the machine is not set up. Tell whoever installed it.
 

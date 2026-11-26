@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('printshop', {
   testHeader: call('header:test'),
   previewHeader: call('header:preview'),
   detectCodex: call('codex:detect'),
+  codexInstallCommand: call('codex:installCommand'),
   codexStatus: call('codex:status'),
   codexLogin: call('codex:login'),
   codexLogout: call('codex:logout'),

@@ -22,11 +22,13 @@ Grab the installer for your machine from the [Releases page](https://github.com/
 
 Both builds are **unsigned**, so the OS will object once. 🛡️
 
-**macOS** — first launch is refused:
+**macOS** — the first launch is refused with *"Apple could not verify Printshop is free of malware"* (or *"unidentified developer"* on older macOS). Once only:
 
-> "Printshop" cannot be opened because it is from an unidentified developer.
+1. Click **Done** (not *Move to Bin*).
+2. Open **System Settings → Privacy & Security** and scroll to the bottom.
+3. Next to *"Printshop" was blocked*, click **Open Anyway**, then enter your Mac password.
 
-Right-click the app in Applications → **Open** → **Open**. Once only. If macOS instead calls it *damaged*:
+Right-click → **Open** no longer gets past this on macOS 15 Sequoia and later; **Open Anyway** works on every version. If macOS instead calls the app *damaged*, run this once in Terminal:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/Printshop.app
