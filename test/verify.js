@@ -14,6 +14,7 @@ const {
   watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE,
   upscalePlan, stickerLayout, stickerImageRect
 } = require('../src/core')
+const { codexVersionCheck, CODEX_TESTED } = require('../src/core')
 const cutline = require('../src/cutline')
 const { PDFName, PDFDict } = require('pdf-lib')
 
@@ -274,6 +275,29 @@ test('causes that cannot change on a second attempt are all fatal', () => {
   ]) {
     assert.equal(classifyFailure(raw).fatal, true, raw)
   }
+})
+
+test('a Codex that rejects our flags is fatal and says to update Codex', () => {
+  for (const raw of [
+    "error: unexpected argument '--ignore-user-config' found",
+    'error: Found argument \'--ephemeral\' which wasn\'t expected, or isn\'t valid in this context',
+    'unknown option --sandbox'
+  ]) {
+    const verdict = classifyFailure(raw)
+    assert.equal(verdict.fatal, true, raw)
+    assert.match(verdict.message, /npm install -g @openai\/codex@latest/, raw)
+  }
+})
+
+test('Codex older than the tested version warns; same or newer does not', () => {
+  assert.equal(codexVersionCheck(`codex-cli ${CODEX_TESTED}`).status, 'ok')
+  assert.equal(codexVersionCheck('codex-cli 0.166.9', '0.167.0').status, 'old')
+  assert.match(codexVersionCheck('codex-cli 0.120.0', '0.167.0').message, /older than Printshop was tested with \(0\.167\.0\)/)
+  assert.equal(codexVersionCheck('codex-cli 0.167.1', '0.167.0').status, 'newer')
+  assert.equal(codexVersionCheck('codex-cli 1.0.0', '0.167.0').status, 'newer')
+  assert.equal(codexVersionCheck('codex-cli 0.200.0', '0.167.0').message, '')
+  assert.equal(codexVersionCheck('something else').status, 'unknown')
+  assert.equal(codexVersionCheck('').status, 'unknown')
 })
 
 test('a one-off slip is worth a second attempt', () => {

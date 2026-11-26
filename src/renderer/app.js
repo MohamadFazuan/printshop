@@ -319,7 +319,7 @@ function renderSetup () {
     ? `${licence.tierLabel} · ${licence.email}`
     : 'Paste the key you received on WhatsApp. No key yet? Buy one from the licence screen.')
   setupStep('stepInstall', Boolean(codexFound), codexFound
-    ? `Found ${codexFound.version}`
+    ? (codexFound.check?.message || `Found ${codexFound.version}`)
     : 'Printshop makes artwork through Codex CLI on your ChatGPT plan. Install it, then come back to this window.')
   setupStep('stepLogin', codexLoggedIn, codexLoggedIn
     ? 'Signed in'
@@ -531,7 +531,8 @@ async function detectCodex () {
     : 'Not found — install Codex CLI, or set its full path here.'
 
   const warning = $('codexWarning')
-  if (codexFound) hide(warning)
+  if (codexFound?.check?.status === 'old' || codexFound?.check?.status === 'unknown') show(warning, codexFound.check.message)
+  else if (codexFound) hide(warning)
   else show(warning, 'Codex CLI not found. Printshop generates artwork through Codex on your ChatGPT plan, so it cannot generate until Codex is installed and signed in.')
   renderSetup()
 }

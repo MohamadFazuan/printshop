@@ -238,12 +238,49 @@ const clip = (text, max = 140) => {
 // signed-out CLI, a refused prompt, a spent quota or a sandbox that will not
 // grant write all fail identically on the retry: the only thing retrying buys
 // is the same error twice as late. Those stop the run and report at once.
+// Codex CLI is a moving dependency: it ships often and has renamed flags
+// before. CODEX_TESTED is the oldest version every job type was run against.
+// Older ones get a warning (flags this app passes may not exist yet); newer
+// ones are only noted in diagnostics, because Codex releases weekly and a
+// warning on every update would teach shops to ignore it. Raise this after
+// testing a release, never lower it.
+const CODEX_TESTED = '0.167.0'
+const CODEX_UPDATE = 'npm install -g @openai/codex@latest'
+
+function parseVersion (text) {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(String(text || ''))
+  return m ? m.slice(1, 4).map(Number) : null
+}
+
+function compareVersions (a, b) {
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1
+  return 0
+}
+
+// { status: 'ok' | 'old' | 'newer' | 'unknown', version, message }
+function codexVersionCheck (versionText, tested = CODEX_TESTED) {
+  const version = parseVersion(versionText)
+  if (!version) {
+    return { status: 'unknown', version: null, message: `Could not read the Codex version ("${clip(versionText, 60)}"). If jobs fail, update Codex: ${CODEX_UPDATE}` }
+  }
+  const shown = version.join('.')
+  const order = compareVersions(version, parseVersion(tested))
+  if (order < 0) {
+    return { status: 'old', version: shown, message: `Codex ${shown} is older than Printshop was tested with (${tested}). Update it before generating: ${CODEX_UPDATE}` }
+  }
+  return { status: order > 0 ? 'newer' : 'ok', version: shown, message: '' }
+}
+
 function classifyFailure (raw, { saved = 0, wanted = 0, timedOut = false } = {}) {
   const text = String(raw || '').toLowerCase()
   const partly = saved > 0 ? ` ${saved} of ${wanted} image${saved === 1 ? '' : 's'} was kept.` : ''
 
   if (timedOut) {
     return { fatal: false, message: `Codex ran out of time and was stopped.${partly} Generating fewer images at once is the reliable fix — each one is a separate round trip to OpenAI.` }
+  }
+  // clap's wording when Codex no longer (or does not yet) take a flag we pass.
+  if (/unexpected argument|unrecognized (option|argument)|unknown (option|flag|argument)|found argument .* which wasn'?t expected/.test(text)) {
+    return { fatal: true, message: `This Codex version does not accept the options Printshop sends.${partly} Update Codex (${CODEX_UPDATE}), then try again. If it still fails, Copy diagnostics and send it to us on WhatsApp.` }
   }
   if (/not logged in|logged out|unauthor|401|invalid.*(token|credential)/.test(text)) {
     return { fatal: true, message: 'Codex is signed out. Open Settings and use Sign in to Codex, then try again.' }
@@ -810,6 +847,8 @@ module.exports = {
   ratioLabel,
   clip,
   classifyFailure,
+  CODEX_TESTED,
+  codexVersionCheck,
   generateInstruction,
   dpiAdvice,
   pngSize,

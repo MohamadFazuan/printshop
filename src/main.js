@@ -100,7 +100,7 @@ const {
   PT_PER_UNIT, UNITS, SIZE_PRESETS,
   EXPORT_FORMATS, COLOUR_SPACES, CMYK_CAPABLE,
   renderSizeFor, aspectFor, pngSize, sizeToPoints, buildPdf, slugify, today,
-  watermarkSvg, pixelCanvas, clip, classifyFailure, generateInstruction, upscalePlan,
+  watermarkSvg, pixelCanvas, clip, classifyFailure, codexVersionCheck, CODEX_TESTED, generateInstruction, upscalePlan,
   stickerImageRect, stickerLayout, buildHeaderProof, headerPreview, HEADER_LAYOUTS
 } = require('./core')
 const {
@@ -350,7 +350,8 @@ async function findCodex (override) {
       tried.add(bin)
       try {
         const { stdout } = await execFileAsync(bin, ['--version'], { timeout: 10000 })
-        return { bin, version: stdout.trim() }
+        const version = stdout.trim()
+        return { bin, version, check: codexVersionCheck(version) }
       } catch { /* next candidate */ }
     }
   }
@@ -1312,7 +1313,7 @@ handle('diagnostics:copy', async () => {
     `${{ darwin: 'macOS', win32: 'Windows' }[process.platform] || process.platform} ${process.getSystemVersion()} · ${process.arch}`,
     `Electron ${process.versions.electron}`,
     `Licence: ${licence ? `${licence.tierLabel} · id ${licence.id}` : 'not activated'}`,
-    `Codex: ${found ? `${found.version} · ${login.loggedIn ? 'signed in' : 'not signed in'}` : 'not found'}`,
+    `Codex: ${found ? `${found.version} (${found.check.status}, tested ${CODEX_TESTED}) · ${login.loggedIn ? 'signed in' : 'not signed in'}` : 'not found'}`,
     `AI upscaler: ${(await findUpscaler()) ? 'installed' : 'missing'}`,
     `Last error: ${lastError ? `${lastError.at.toISOString()} · ${lastError.channel} · ${lastError.message}` : 'none this session'}`
   ]
