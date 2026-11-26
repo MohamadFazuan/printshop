@@ -1446,13 +1446,19 @@ const refuse = (status) => new Response(null, { status })
 
 async function serveApp (request) {
   const url = new URL(request.url)
+  let asked
+  try {
+    asked = decodeURIComponent(url.pathname)
+  } catch {
+    return refuse(400)
+  }
   let file
   if (url.host === 'renderer') {
-    file = path.join(RENDERER_DIR, path.normalize(decodeURIComponent(url.pathname)))
+    file = path.join(RENDERER_DIR, path.normalize(asked))
     if (!isInside(RENDERER_DIR, file) || file === RENDERER_DIR) return refuse(404)
   } else if (url.host === 'media') {
     try {
-      file = await fs.realpath(decodeURIComponent(url.pathname.slice(1)))
+      file = await fs.realpath(asked.slice(1))
     } catch {
       return refuse(404)
     }
