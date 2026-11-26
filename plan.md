@@ -43,8 +43,8 @@ Done as: session allowlist of job folders (`jobDirs` in `src/main.js`, checks in
 
 - [ ] **8. Code signing.** Mac notarization first (Apple Developer, USD 99/yr); Windows certificate later. Removes the "damaged"/SmartScreen drop-off for shop staff.
 - [ ] **9. Auto-update** with `electron-updater` on GitHub Releases (needs signed Mac builds).
-- [ ] **10. Pin CI actions to commit SHAs** (`actions/checkout`, `setup-node`, `upload-artifact`, `softprops/action-gh-release`). The workflow has `contents: write`.
-- [ ] **14. "Copy diagnostics" button**: app version, OS, Codex version, last error, copied to clipboard for WhatsApp support. No server.
+- [x] **10. Pin CI actions to commit SHAs** (done 2026-11-26: checkout v4.4.0, setup-node v4.4.0, upload-artifact v4.6.2, action-gh-release v2.6.2; `.github/dependabot.yml` opens weekly pin updates) (`actions/checkout`, `setup-node`, `upload-artifact`, `softprops/action-gh-release`). The workflow has `contents: write`.
+- [x] **14. "Copy diagnostics" button** (done 2026-11-26: Settings → Licence → Support, and beside Try again on a failed job; licence id only, no email): app version, OS, Codex version, last error, copied to clipboard for WhatsApp support. No server.
 
 ## Phase 4 — Business & ops
 

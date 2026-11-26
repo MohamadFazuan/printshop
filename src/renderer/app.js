@@ -1283,6 +1283,19 @@ document.addEventListener('paste', (event) => {
 $('generate').addEventListener('click', generate)
 $('saveExport').addEventListener('click', saveExport)
 
+// Copies a support summary (versions, Codex state, last error) to the
+// clipboard in the main process, then says so on the button for a moment.
+async function copyDiagnostics (button) {
+  const label = button.textContent
+  button.disabled = true
+  button.textContent = 'Copying…'
+  const result = await api.copyDiagnostics()
+  button.textContent = result.ok ? 'Copied' : 'Could not copy'
+  setTimeout(() => { button.textContent = label; button.disabled = false }, 2000)
+}
+$('copyDiagnostics').addEventListener('click', () => copyDiagnostics($('copyDiagnostics')))
+$('copyJobDiagnostics').addEventListener('click', () => copyDiagnostics($('copyJobDiagnostics')))
+
 // Cancel kills the running Codex or upscaler process in the main process.
 // Images already saved stay; the job's own handler reports the outcome.
 async function cancelJob (button, kind) {
