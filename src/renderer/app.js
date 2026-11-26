@@ -563,6 +563,7 @@ function startProgress (total) {
 function stopProgress (title) {
   clearInterval(jobTimer)
   jobTimer = null
+  $('cancelJob').hidden = true
   $('progressTitle').textContent = title
   paintProgress()
 }
@@ -570,10 +571,16 @@ function stopProgress (title) {
 api.onProgress((event) => {
   if (event.phase === 'start') {
     startProgress(event.total)
+    $('cancelJob').hidden = false
+    $('cancelJob').disabled = false
+    $('cancelJob').textContent = 'Cancel'
     hide($('jobNote'))
     appendLog(`Codex CLI · ${event.total} × ${event.renderSize}${event.reference ? ` · reference: ${event.reference}` : ''}`)
   } else if (event.phase === 'upscale') {
-    if (exporting) $('saveExport').textContent = `Upscaling… ${Math.floor(event.percent || 0)}%`
+    if (exporting) {
+      $('saveExport').textContent = `Upscaling… ${Math.floor(event.percent || 0)}%`
+      $('cancelExport').hidden = false
+    }
   } else if (event.phase === 'log') {
     appendLog(event.text)
   } else if (event.phase === 'image') {
@@ -588,15 +595,23 @@ api.onProgress((event) => {
   } else if (event.phase === 'done') {
     jobDone = event.done
     if (event.shortfall > 0) {
-      stopProgress(`Finished short — ${event.done} of ${event.total}`)
+      stopProgress(event.cancelled
+        ? `Cancelled — kept ${event.done} of ${event.total}`
+        : `Finished short — ${event.done} of ${event.total}`)
       show($('jobNote'), event.note)
-      $('jobNote').className = 'banner warn'
+      $('jobNote').className = event.cancelled ? 'banner' : 'banner warn'
       $('retryRow').hidden = false
       appendLog(`Kept ${event.done} of ${event.total}`)
     } else {
       stopProgress('Done')
       appendLog('Finished')
     }
+  } else if (event.phase === 'cancelled') {
+    stopProgress('Cancelled')
+    appendLog(event.text)
+    show($('jobNote'), event.text)
+    $('jobNote').className = 'banner'
+    $('retryRow').hidden = false
   } else if (event.phase === 'failed') {
     stopProgress('Failed')
     show($('jobNote'), event.text)
@@ -636,6 +651,8 @@ async function generate () {
       cut: $('cutKind').value
     }), $('genError'))
 
+    // Cancelled before any image landed: the progress card already says so.
+    if (!job.files.length) return
     lastJob = job
     selectedFile = null
     selectedIndex = 0
@@ -805,6 +822,7 @@ async function saveExport () {
     exporting = false
     button.disabled = false
     button.textContent = 'Export'
+    $('cancelExport').hidden = true
   }
 }
 
@@ -1199,6 +1217,16 @@ document.addEventListener('paste', (event) => {
 
 $('generate').addEventListener('click', generate)
 $('saveExport').addEventListener('click', saveExport)
+
+// Cancel kills the running Codex or upscaler process in the main process.
+// Images already saved stay; the job's own handler reports the outcome.
+async function cancelJob (button, kind) {
+  button.disabled = true
+  button.textContent = 'Cancelling…'
+  await api.cancelJob({ kind })
+}
+$('cancelJob').addEventListener('click', () => cancelJob($('cancelJob'), 'generate'))
+$('cancelExport').addEventListener('click', () => cancelJob($('cancelExport'), 'upscale'))
 $('openFolder').addEventListener('click', () => api.reveal({ target: lastJob.jobDir }))
 
 // Settings sidebar: one section at a time. Arrow keys move between tabs.

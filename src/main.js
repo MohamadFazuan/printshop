@@ -27,9 +27,44 @@ function killTree (child) {
     .on('error', () => { child.kill() })
 }
 
-function runDetached (bin, args, timeoutMs, onLine) {
+// The long jobs running now, by kind ('generate', 'upscale'), so Cancel can
+// stop exactly the one the operator pressed it on. A job holds the processes it
+// started; cancelling kills each tree and the job stops instead of retrying.
+const activeJobs = new Map()
+
+function beginJob (kind) {
+  const job = { kind, cancelled: false, children: new Set() }
+  activeJobs.set(kind, job)
+  return job
+}
+
+function endJob (job) {
+  if (activeJobs.get(job.kind) === job) activeJobs.delete(job.kind)
+}
+
+function cancelledError (message) {
+  const error = new Error(message)
+  error.cancelled = true
+  return error
+}
+
+// Registers a spawned process with its job. Returns false when the job was
+// cancelled before the process started, in which case it is killed at once.
+function track (job, child) {
+  if (!job) return true
+  job.children.add(child)
+  child.on('close', () => job.children.delete(child))
+  if (job.cancelled) {
+    killTree(child)
+    return false
+  }
+  return true
+}
+
+function runDetached (bin, args, timeoutMs, onLine, job = null) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] })
+    track(job, child)
     let stdout = ''
     let stderr = ''
     let pending = ''
@@ -52,7 +87,8 @@ function runDetached (bin, args, timeoutMs, onLine) {
     child.on('error', (error) => { clearTimeout(timer); reject(error) })
     child.on('close', (code) => {
       clearTimeout(timer)
-      if (code === 0) resolve({ stdout, stderr })
+      if (job && job.cancelled) reject(cancelledError('Cancelled.'))
+      else if (code === 0) resolve({ stdout, stderr })
       else reject(new Error(stderr.trim() || stdout.trim() || `Exited with code ${code}.`))
     })
   })
@@ -347,7 +383,7 @@ function tomlPath (value) {
 }
 
 // Codex writes the images itself, inside the job folder, on the ChatGPT plan.
-async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, referencePaths = [], cut = 'none' }) {
+async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, referencePaths = [], cut = 'none', job = null }) {
   const { wPt, hPt } = sizeToPoints(size)
   const aspect = aspectFor(wPt, hPt)
   const wanted = Array.from({ length: count }, (_, i) => `${String(i + 1).padStart(2, '0')}.png`)
@@ -368,8 +404,10 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
   let lastMessage = ''
   let fatalMessage = ''
   let timedOut = false
+  let cancelled = false
   try {
     for (let attempt = 1; attempt <= GENERATE_ATTEMPTS; attempt++) {
+      if (job && job.cancelled) { cancelled = true; break }
       const have = await pngs()
       // Trust the count, not the names — an agent that saved four images under
       // its own naming has still done the job.
@@ -417,9 +455,10 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
           if (!text) return
           emitProgress({ phase: 'log', text })
           streamed = `${streamed}\n${text}`.slice(-4000)
-        })
+        }, job)
         lastMessage = (await fs.readFile(outFile, 'utf8').catch(() => '')).trim()
       } catch (error) {
+        if (error.cancelled) { cancelled = true; break }
         // A failed attempt is not a failed job while a retry remains.
         timedOut = Boolean(error.timedOut)
         lastMessage = error.message
@@ -445,9 +484,10 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
   const files = (await pngs()).sort().map((name) => path.join(jobDir, name))
 
   if (!files.length) {
+    if (cancelled) throw cancelledError('Cancelled. Nothing had been saved yet.')
     throw new Error(fatalMessage || explainFailure(lastMessage, { saved: 0, wanted: count, timedOut }))
   }
-  return { files, shortfall: count - files.length, reason: fatalMessage || lastMessage, timedOut }
+  return { files, shortfall: count - files.length, reason: fatalMessage || lastMessage, timedOut, cancelled }
 }
 
 handle('codex:detect', async () => {
@@ -783,21 +823,30 @@ handle('image:generate', async ({ prompt, size, count, referencePaths, reference
   let shortfall = 0
   let reason = ''
   let timedOut = false
+  let cancelled = false
+  const job = beginJob('generate')
   try {
     const found = await findCodex(config.codexPath)
     if (!found) throw new Error('Codex CLI not found. Install it, or set its path in Settings.')
-    ;({ files, shortfall, reason, timedOut } = await generateViaCodex({
+    ;({ files, shortfall, reason, timedOut, cancelled } = await generateViaCodex({
       prompt: prompt.trim(), size, count: n, jobDir, codexBin: found.bin, referencePaths: refs,
-      cut: CUT_KINDS.includes(cut) ? cut : 'none'
+      cut: CUT_KINDS.includes(cut) ? cut : 'none', job
     }))
   } catch (error) {
-    emitProgress({ phase: 'failed', text: error.message })
     // Keep whatever did land — a part-finished job is worth more than a tidy
     // folder. Only clear up when there is genuinely nothing to keep.
     const salvaged = (await fs.readdir(jobDir).catch(() => []))
       .filter((name) => name.toLowerCase().endsWith('.png'))
     if (!salvaged.length) await fs.rm(jobDir, { recursive: true, force: true }).catch(() => {})
+    // Cancelling is the operator's choice, not a failure: no error, no warning.
+    if (error.cancelled) {
+      emitProgress({ phase: 'cancelled', text: error.message })
+      return { jobDir: null, files: [], urls: [], dims: [], renderSize, cancelled: true }
+    }
+    emitProgress({ phase: 'failed', text: error.message })
     throw error
+  } finally {
+    endJob(job)
   }
 
   emitProgress({
@@ -807,7 +856,10 @@ handle('image:generate', async ({ prompt, size, count, referencePaths, reference
     // Say so when fewer arrived than were asked for, rather than presenting a
     // short job as a complete one.
     shortfall,
-    note: shortfall > 0 ? explainFailure(reason, { saved: files.length, wanted: n, timedOut }) : ''
+    cancelled,
+    note: !shortfall ? '' : cancelled
+      ? `Cancelled. Kept the ${files.length} image${files.length === 1 ? '' : 's'} already saved.`
+      : explainFailure(reason, { saved: files.length, wanted: n, timedOut })
   })
 
   // Codex chooses its own dimensions, so read them rather than assume them.
@@ -897,10 +949,11 @@ handle('upscale:status', async () => ({ available: Boolean(await findUpscaler())
 // The ncnn binary prints its progress ("41.67%") on stderr and exits 0 even
 // when it failed — a GPU out of memory, an unreadable input — so success is
 // judged by the file it leaves behind, never by the exit code.
-function runUpscaler ({ bin, models }, input, output, onPercent) {
+function runUpscaler ({ bin, models }, input, output, onPercent, job = null) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ['-i', input, '-o', output, '-n', UPSCALER_MODEL, '-m', models],
       { stdio: ['ignore', 'pipe', 'pipe'] })
+    track(job, child)
     let tail = ''
     const timer = setTimeout(() => {
       killTree(child)
@@ -914,14 +967,18 @@ function runUpscaler ({ bin, models }, input, output, onPercent) {
     })
     child.stdout.on('data', () => {})
     child.on('error', (error) => { clearTimeout(timer); reject(error) })
-    child.on('close', () => { clearTimeout(timer); resolve(tail) })
+    child.on('close', () => {
+      clearTimeout(timer)
+      if (job && job.cancelled) reject(cancelledError('Upscaling cancelled. Nothing was exported.'))
+      else resolve(tail)
+    })
   })
 }
 
 // Returns the file to export from: the original when it already meets the
 // page's DPI, otherwise an upscaled copy sized to the page. Cached per size,
 // because the same variant is often exported several ways in a row.
-async function upscaledFor (file, size, fitMode) {
+async function upscaledFor (file, size, fitMode, job = null) {
   const meta = await sharp(file).metadata()
   const { wPt, hPt } = sizeToPoints(size)
   const plan = upscalePlan(meta.width, meta.height, wPt, hPt, fitMode)
@@ -940,7 +997,7 @@ async function upscaledFor (file, size, fitMode) {
   const raw = path.join(dir, `.${base}-x4-${crypto.randomBytes(3).toString('hex')}.png`)
   try {
     emitProgress({ phase: 'upscale', percent: 0 })
-    const tail = await runUpscaler(upscaler, file, raw, (percent) => emitProgress({ phase: 'upscale', percent }))
+    const tail = await runUpscaler(upscaler, file, raw, (percent) => emitProgress({ phase: 'upscale', percent }), job)
     let out
     try { out = await sharp(raw).metadata() } catch { out = null }
     if (!out || out.width !== meta.width * 4 || out.height !== meta.height * 4) {
@@ -1150,7 +1207,13 @@ handle('export:save', async ({ file, size, fitMode, format, colour, watermark, u
 
   let upscaled = null
   if (upscale) {
-    const result = await upscaledFor(file, size, fitMode)
+    const job = beginJob('upscale')
+    let result
+    try {
+      result = await upscaledFor(file, size, fitMode, job)
+    } finally {
+      endJob(job)
+    }
     if (result.file !== file) upscaled = { dpi: result.plan.reachedDpi, from: result.plan.dpi }
     file = result.file
   }
@@ -1210,6 +1273,15 @@ handle('export:save', async ({ file, size, fitMode, format, colour, watermark, u
     upscaled,
     cut: cutGeometry ? { kind: cutGeometry.kind, count: sheetCount, pieces: cutGeometry.pieces, marks: Boolean(cutGeometry.marks), header: Boolean(cutGeometry.header) } : null
   }
+})
+
+// Stops the running job of that kind. Already-saved images stay on disk.
+handle('job:cancel', async ({ kind }) => {
+  const job = activeJobs.get(kind)
+  if (!job) return false
+  job.cancelled = true
+  for (const child of job.children) killTree(child)
+  return true
 })
 
 handle('licence:get', async () => licenceInfo())

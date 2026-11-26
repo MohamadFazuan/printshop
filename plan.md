@@ -33,8 +33,10 @@ Done as: session allowlist of job folders (`jobDirs` in `src/main.js`, checks in
   - `resetAdHocDarwinSignature` is required: without it the unsigned arm64 app is SIGKILLed (`Code Signature Invalid`) at launch.
   - `grantFileProtocolExtraPrivileges` stays on: turning it off makes `loadFile` from `app.asar` fail (`chrome-error://`). Follow-up: serve the renderer over a custom `app://` protocol, then turn it off.
   - Limit: while builds are unsigned, someone can also rewrite the hash in `Info.plist`. Integrity becomes strong only with signing (item 8).
-- [ ] **11. Cancel button** for generate and upscale
-  - Track the running child process; new IPC `job:cancel` calls the existing `killTree`; clean up an empty job folder.
+- [x] **11. Cancel button** for generate and upscale
+  - Main tracks running jobs by kind (`activeJobs`); `job:cancel` kills their process trees with `killTree` and stops retries. Saved images are kept; a job cancelled before any image lands removes its empty folder.
+  - Cancel on the progress card while generating; Cancel next to Export while upscaling.
+  - Tested in the dev app with a fake `codex` (partial and nothing-saved cases). Upscale cancel not run live: the test image upscaled too fast to cancel.
 - [ ] **13. First-run checklist**: licence → Codex installed → Codex signed in, all on one screen with ticks.
 
 ## Phase 3 — Distribution & trust

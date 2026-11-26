@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('printshop', {
   // file's location. Returns '' for a File with nothing on disk (a screenshot).
   pathForFile: (file) => webUtils.getPathForFile(file),
   generate: call('image:generate'),
+  cancelJob: call('job:cancel'),
   saveExport: call('export:save'),
   upscaleStatus: call('upscale:status'),
   cutPreview: call('cut:preview'),
