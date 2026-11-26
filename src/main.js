@@ -1,11 +1,10 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const crypto = require('node:crypto')
-const { pathToFileURL } = require('node:url')
 const { execFile, spawn } = require('node:child_process')
 const { promisify } = require('node:util')
 const QRCode = require('qrcode')
@@ -109,7 +108,7 @@ const {
   clampInset, MARK_INSET_PT, MARK_INSET_MIN_MM, MARK_INSET_MAX_MM, clampHeaderHeight, SHEETS: SHEET_SIZES
 } = require('./cutline')
 const { verifyLicence, featuresForCut, featuresForExport, assertAllowed, WHATSAPP } = require('./licence')
-const { isJobVariant, checkCodexBinary } = require('./guard')
+const { isJobVariant, isInside, checkCodexBinary } = require('./guard')
 
 // ---------------------------------------------------------------------------
 // Job folders made this session. Every handler that reads, writes beside or
@@ -738,9 +737,10 @@ const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 
 async function describeReference (file) {
   const { width, height, bytes } = await assertReadable(file)
+  mediaFiles.add(await fs.realpath(file))
   return {
     path: file,
-    url: pathToFileURL(file).href,
+    url: mediaUrl(file),
     name: path.basename(file),
     width,
     height,
@@ -904,7 +904,7 @@ handle('image:generate', async ({ prompt, size, count, referencePaths, reference
   return {
     jobDir,
     files,
-    urls: files.map((file) => pathToFileURL(file).href),
+    urls: files.map(mediaUrl),
     dims,
     renderSize
   }
@@ -1412,6 +1412,63 @@ handle('shell:reveal', async ({ target }) => {
 })
 
 // ---------------------------------------------------------------------------
+// app:// protocol. The page and every image it shows come through here, not
+// file://, so the renderer can reach nothing on disk it was not handed:
+//   app://renderer/<file>  the UI, read from src/renderer (inside app.asar)
+//   app://media/<path>     a variant from a job this session, or a reference
+//                          image the shop picked, dropped or pasted
+// With file:// unused, the grantFileProtocolExtraPrivileges fuse is off.
+// ---------------------------------------------------------------------------
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app', privileges: { standard: true, secure: true } }
+])
+
+const RENDERER_DIR = path.join(__dirname, 'renderer')
+// Real paths of reference images described to the renderer this session.
+const mediaFiles = new Set()
+
+const mediaUrl = (file) => `app://media/${encodeURIComponent(file)}`
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml'
+}
+
+const refuse = (status) => new Response(null, { status })
+
+async function serveApp (request) {
+  const url = new URL(request.url)
+  let file
+  if (url.host === 'renderer') {
+    file = path.join(RENDERER_DIR, path.normalize(decodeURIComponent(url.pathname)))
+    if (!isInside(RENDERER_DIR, file) || file === RENDERER_DIR) return refuse(404)
+  } else if (url.host === 'media') {
+    try {
+      file = await fs.realpath(decodeURIComponent(url.pathname.slice(1)))
+    } catch {
+      return refuse(404)
+    }
+    if (!mediaFiles.has(file) && !isJobVariant(jobDirs, file)) return refuse(403)
+  } else {
+    return refuse(404)
+  }
+  try {
+    const body = await fs.readFile(file)
+    return new Response(body, { headers: { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' } })
+  } catch {
+    return refuse(404)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
 
@@ -1430,7 +1487,7 @@ function createWindow () {
       sandbox: true
     }
   })
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  win.loadURL('app://renderer/index.html')
 }
 
 // The app is one local page with no links. Any attempt to navigate away, open
@@ -1443,6 +1500,7 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(async () => {
+  protocol.handle('app', serveApp)
   await loadLicence()
   createWindow()
   prunePastedReferences()

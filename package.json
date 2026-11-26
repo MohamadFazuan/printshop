@@ -41,7 +41,8 @@
       "enableNodeCliInspectArguments": false,
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true,
-      "resetAdHocDarwinSignature": true
+      "resetAdHocDarwinSignature": true,
+      "grantFileProtocolExtraPrivileges": false
     },
     "extraResources": [
       {
