@@ -136,6 +136,7 @@
     <p id="jobNote" class="banner warn" hidden></p>
     <div class="actions" id="retryRow" hidden>
       <output class="muted small">Nothing is lost — images already saved stay in the job folder.</output>
+      <button id="copyJobDiagnostics" class="ghost small">Copy diagnostics</button>
       <button id="retryJob" class="ghost small">Try again</button>
     </div>
     <details class="logbox" open>
@@ -257,6 +258,11 @@
           <button id="upgradeFromSettings" class="ghost small" hidden>Upgrade to Pro</button>
           <button id="changeLicence" class="ghost small">Change key</button>
         </span>
+      </div>
+      <h3 class="small-head">Support</h3>
+      <div class="licence-row">
+        <p class="small muted" id="diagnosticsNote">Something not working? Copy the diagnostics and paste them into WhatsApp with your question.</p>
+        <span class="btns"><button id="copyDiagnostics" class="ghost small">Copy diagnostics</button></span>
       </div>
     </section>
 

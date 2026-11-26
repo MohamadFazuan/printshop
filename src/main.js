@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const os = require('node:os')
@@ -190,11 +190,16 @@ async function writeConfig (config) {
 // IPC
 // ---------------------------------------------------------------------------
 
+// The most recent error any handler returned, for Copy diagnostics. A shop
+// reports a problem after the fact, when the message is no longer on screen.
+let lastError = null
+
 function handle (channel, fn) {
   ipcMain.handle(channel, async (_event, payload) => {
     try {
       return { ok: true, data: await fn(payload ?? {}) }
     } catch (error) {
+      if (!error.cancelled) lastError = { channel, message: error.message || String(error), at: new Date() }
       // Verbatim — a swallowed billing or content-policy error looks like a crash.
       return { ok: false, error: error.message || String(error) }
     }
@@ -1282,6 +1287,27 @@ handle('job:cancel', async ({ kind }) => {
   job.cancelled = true
   for (const child of job.children) killTree(child)
   return true
+})
+
+// A plain-text summary for support, copied to the clipboard here so the
+// renderer needs no clipboard access. Holds the licence id but not the email:
+// the id is enough to find the buyer, and the text gets pasted into chats.
+handle('diagnostics:copy', async () => {
+  const config = await readConfig()
+  const found = await findCodex(config.codexPath)
+  const login = found ? await codexStatus(found.bin) : null
+  const lines = [
+    `Printshop ${app.getVersion()}${app.isPackaged ? '' : ' (development)'}`,
+    `${{ darwin: 'macOS', win32: 'Windows' }[process.platform] || process.platform} ${process.getSystemVersion()} · ${process.arch}`,
+    `Electron ${process.versions.electron}`,
+    `Licence: ${licence ? `${licence.tierLabel} · id ${licence.id}` : 'not activated'}`,
+    `Codex: ${found ? `${found.version} · ${login.loggedIn ? 'signed in' : 'not signed in'}` : 'not found'}`,
+    `AI upscaler: ${(await findUpscaler()) ? 'installed' : 'missing'}`,
+    `Last error: ${lastError ? `${lastError.at.toISOString()} · ${lastError.channel} · ${lastError.message}` : 'none this session'}`
+  ]
+  const text = lines.join('\n')
+  clipboard.writeText(text)
+  return text
 })
 
 handle('licence:get', async () => licenceInfo())

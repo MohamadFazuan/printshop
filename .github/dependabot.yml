@@ -1,0 +1,9 @@
+# Actions in the build workflow are pinned to commit SHAs, so a moved tag
+# cannot change what runs with write access to releases. Dependabot keeps the
+# pins current with a weekly PR instead of letting them go stale.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
