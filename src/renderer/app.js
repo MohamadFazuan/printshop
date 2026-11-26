@@ -10,6 +10,7 @@ let selectedFile = null
 let selectedIndex = 0
 let promptBeforeCodex = null
 let codexFound = null
+let codexLoggedIn = false
 let upscaleAvailable = false
 let exporting = false
 let references = []
@@ -297,7 +298,70 @@ function showLicence (summary) {
   document.querySelector('input[name="format"][value="tiff"]').disabled = false
   refreshExportOptions()
   updateCutPreview()
+  renderSetup()
 }
+
+// ---------------------------------------------------------------------------
+// First-run checklist. Each step that is not done says what to do next, so a
+// new shop never meets the missing piece as a failure minutes into a job.
+// ---------------------------------------------------------------------------
+
+function setupStep (id, done, text, { go = true } = {}) {
+  $(id).classList.toggle('done', done)
+  $(`${id}Text`).textContent = text
+  $(`${id}Go`).hidden = done || !go
+  $(id).querySelector('.tick').textContent = done ? '✓' : $(id).querySelector('.tick').dataset.n
+}
+
+function renderSetup () {
+  if (!catalog) return
+  setupStep('stepLicence', Boolean(licence), licence
+    ? `${licence.tierLabel} · ${licence.email}`
+    : 'Paste the key you received on WhatsApp. No key yet? Buy one from the licence screen.')
+  setupStep('stepInstall', Boolean(codexFound), codexFound
+    ? `Found ${codexFound.version}`
+    : 'Printshop makes artwork through Codex CLI on your ChatGPT plan. Install it, then come back to this window.')
+  setupStep('stepLogin', codexLoggedIn, codexLoggedIn
+    ? 'Signed in'
+    : codexFound ? 'Opens your browser to sign in with your ChatGPT account.' : 'Available once Codex is installed.',
+  { go: Boolean(codexFound) })
+  $('setupCard').hidden = Boolean(licence && codexFound && codexLoggedIn)
+}
+
+for (const li of document.querySelectorAll('.steps li')) {
+  const tick = li.querySelector('.tick')
+  tick.dataset.n = tick.textContent
+}
+
+// Re-check Codex when the window comes back into focus while setup is open:
+// the usual way to finish a step is to install or sign in elsewhere.
+let setupChecking = false
+window.addEventListener('focus', async () => {
+  if ($('setupCard').hidden || setupChecking || !catalog) return
+  setupChecking = true
+  try {
+    await detectCodex()
+    await refreshCodexLogin()
+    refresh()
+  } finally {
+    setupChecking = false
+  }
+})
+
+$('stepLicenceGo').addEventListener('click', () => openLicencePane(true))
+$('stepInstallGo').addEventListener('click', () => openSettings('codex'))
+$('stepLoginGo').addEventListener('click', async () => {
+  const button = $('stepLoginGo')
+  button.disabled = true
+  button.textContent = 'Browser opened…'
+  $('stepLoginText').textContent = 'Finish sign-in in your browser, then come back here.'
+  const result = await api.codexLogin()
+  button.disabled = false
+  button.textContent = 'Sign in'
+  await refreshCodexLogin()
+  if (!result.ok && !codexLoggedIn) $('stepLoginText').textContent = result.error
+  refresh()
+})
 
 function openLicencePane (canCancel) {
   $('licenceKey').value = ''
@@ -449,6 +513,8 @@ async function refreshCodexLogin () {
     : 'Codex CLI not installed.'
   $('codexLogin').hidden = !status.installed || status.loggedIn
   $('codexLogout').hidden = !status.loggedIn
+  codexLoggedIn = Boolean(status.installed && status.loggedIn)
+  renderSetup()
 }
 
 // Codex is the whole engine now — without it the app cannot generate at all.
@@ -463,8 +529,7 @@ async function detectCodex () {
   const warning = $('codexWarning')
   if (codexFound) hide(warning)
   else show(warning, 'Codex CLI not found. Printshop generates artwork through Codex on your ChatGPT plan, so it cannot generate until Codex is installed and signed in.')
-
-  if (!codexFound) $('settingsPane').hidden = false
+  renderSetup()
 }
 
 async function loadSettings () {
@@ -563,6 +628,7 @@ function startProgress (total) {
 function stopProgress (title) {
   clearInterval(jobTimer)
   jobTimer = null
+  $('cancelJob').hidden = true
   $('progressTitle').textContent = title
   paintProgress()
 }
@@ -570,10 +636,16 @@ function stopProgress (title) {
 api.onProgress((event) => {
   if (event.phase === 'start') {
     startProgress(event.total)
+    $('cancelJob').hidden = false
+    $('cancelJob').disabled = false
+    $('cancelJob').textContent = 'Cancel'
     hide($('jobNote'))
     appendLog(`Codex CLI · ${event.total} × ${event.renderSize}${event.reference ? ` · reference: ${event.reference}` : ''}`)
   } else if (event.phase === 'upscale') {
-    if (exporting) $('saveExport').textContent = `Upscaling… ${Math.floor(event.percent || 0)}%`
+    if (exporting) {
+      $('saveExport').textContent = `Upscaling… ${Math.floor(event.percent || 0)}%`
+      $('cancelExport').hidden = false
+    }
   } else if (event.phase === 'log') {
     appendLog(event.text)
   } else if (event.phase === 'image') {
@@ -588,15 +660,23 @@ api.onProgress((event) => {
   } else if (event.phase === 'done') {
     jobDone = event.done
     if (event.shortfall > 0) {
-      stopProgress(`Finished short — ${event.done} of ${event.total}`)
+      stopProgress(event.cancelled
+        ? `Cancelled — kept ${event.done} of ${event.total}`
+        : `Finished short — ${event.done} of ${event.total}`)
       show($('jobNote'), event.note)
-      $('jobNote').className = 'banner warn'
+      $('jobNote').className = event.cancelled ? 'banner' : 'banner warn'
       $('retryRow').hidden = false
       appendLog(`Kept ${event.done} of ${event.total}`)
     } else {
       stopProgress('Done')
       appendLog('Finished')
     }
+  } else if (event.phase === 'cancelled') {
+    stopProgress('Cancelled')
+    appendLog(event.text)
+    show($('jobNote'), event.text)
+    $('jobNote').className = 'banner'
+    $('retryRow').hidden = false
   } else if (event.phase === 'failed') {
     stopProgress('Failed')
     show($('jobNote'), event.text)
@@ -636,6 +716,8 @@ async function generate () {
       cut: $('cutKind').value
     }), $('genError'))
 
+    // Cancelled before any image landed: the progress card already says so.
+    if (!job.files.length) return
     lastJob = job
     selectedFile = null
     selectedIndex = 0
@@ -805,6 +887,7 @@ async function saveExport () {
     exporting = false
     button.disabled = false
     button.textContent = 'Export'
+    $('cancelExport').hidden = true
   }
 }
 
@@ -1199,9 +1282,50 @@ document.addEventListener('paste', (event) => {
 
 $('generate').addEventListener('click', generate)
 $('saveExport').addEventListener('click', saveExport)
+
+// Cancel kills the running Codex or upscaler process in the main process.
+// Images already saved stay; the job's own handler reports the outcome.
+async function cancelJob (button, kind) {
+  button.disabled = true
+  button.textContent = 'Cancelling…'
+  await api.cancelJob({ kind })
+}
+$('cancelJob').addEventListener('click', () => cancelJob($('cancelJob'), 'generate'))
+$('cancelExport').addEventListener('click', () => cancelJob($('cancelExport'), 'upscale'))
 $('openFolder').addEventListener('click', () => api.reveal({ target: lastJob.jobDir }))
 
-$('openSettings').addEventListener('click', () => { $('settingsPane').hidden = false })
+// Settings sidebar: one section at a time. Arrow keys move between tabs.
+function showSettingsTab (name) {
+  const tabs = [...document.querySelectorAll('.settings-nav [data-tab]')]
+  for (const tab of tabs) {
+    const on = tab.dataset.tab === name
+    tab.setAttribute('aria-selected', String(on))
+    tab.tabIndex = on ? 0 : -1
+  }
+  for (const panel of document.querySelectorAll('.settings-panels [data-panel]')) panel.hidden = panel.dataset.panel !== name
+  document.querySelector('.settings-panels').scrollTop = 0
+}
+function openSettings (tab) {
+  if (tab) showSettingsTab(tab)
+  $('settingsPane').hidden = false
+}
+document.querySelector('.settings-nav').addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-tab]')
+  if (tab) showSettingsTab(tab.dataset.tab)
+})
+document.querySelector('.settings-nav').addEventListener('keydown', (e) => {
+  if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+  const tabs = [...document.querySelectorAll('.settings-nav [data-tab]')]
+  const i = tabs.findIndex((t) => t.getAttribute('aria-selected') === 'true')
+  const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1
+  const next = tabs[(i + step + tabs.length) % tabs.length]
+  showSettingsTab(next.dataset.tab)
+  next.focus()
+  e.preventDefault()
+})
+showSettingsTab('licence')
+
+$('openSettings').addEventListener('click', () => openSettings())
 $('closeSettings').addEventListener('click', () => { $('settingsPane').hidden = true })
 
 $('browseFolder').addEventListener('click', async () => {

@@ -25,14 +25,19 @@ Done as: session allowlist of job folders (`jobDirs` in `src/main.js`, checks in
   - Add `webContents.setWindowOpenHandler(() => ({ action: 'deny' }))` and a `will-navigate` handler that calls `preventDefault()`.
 - [x] **Tests** for 1–3: paths outside `outputDir` are rejected.
 
-## Phase 2 — Licence integrity & core UX
+## Phase 2 — Licence integrity & core UX ✅ done 2026-11-26
 
-- [ ] **5. Electron fuses** (`@electron/fuses` in an electron-builder `afterPack` hook)
-  - `EnableEmbeddedAsarIntegrityValidation`, `OnlyLoadAppFromAsar`, `RunAsNode=false`, `EnableNodeCliInspectArguments=false`.
-  - Purpose: stop casual edits to `app.asar` that unlock Pro.
-- [ ] **11. Cancel button** for generate and upscale
-  - Track the running child process; new IPC `job:cancel` calls the existing `killTree`; clean up an empty job folder.
-- [ ] **13. First-run checklist**: licence → Codex installed → Codex signed in, all on one screen with ticks.
+- [x] **5. Electron fuses** (native `electronFuses` in electron-builder 26, no extra dependency)
+  - On: `runAsNode=false`, `enableNodeOptionsEnvironmentVariable=false`, `enableNodeCliInspectArguments=false`, `enableEmbeddedAsarIntegrityValidation`, `onlyLoadAppFromAsar`, `resetAdHocDarwinSignature`.
+  - Verified on a local arm64 build: launches, IPC + upscaler work, a byte-patched `app.asar` is refused (`ASAR Integrity Violation`).
+  - `resetAdHocDarwinSignature` is required: without it the unsigned arm64 app is SIGKILLed (`Code Signature Invalid`) at launch.
+  - `grantFileProtocolExtraPrivileges` stays on: turning it off makes `loadFile` from `app.asar` fail (`chrome-error://`). Follow-up: serve the renderer over a custom `app://` protocol, then turn it off.
+  - Limit: while builds are unsigned, someone can also rewrite the hash in `Info.plist`. Integrity becomes strong only with signing (item 8).
+- [x] **11. Cancel button** for generate and upscale
+  - Main tracks running jobs by kind (`activeJobs`); `job:cancel` kills their process trees with `killTree` and stops retries. Saved images are kept; a job cancelled before any image lands removes its empty folder.
+  - Cancel on the progress card while generating; Cancel next to Export while upscaling.
+  - Tested in the dev app with a fake `codex` (partial and nothing-saved cases). Upscale cancel not run live: the test image upscaled too fast to cancel.
+- [x] **13. First-run checklist**: licence → Codex installed → Codex signed in, one card in place of the empty state, each step with its own button. Re-checks Codex when the window regains focus. Replaces auto-opening Settings when Codex is missing.
 
 ## Phase 3 — Distribution & trust
 

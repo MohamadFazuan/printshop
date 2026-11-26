@@ -99,6 +99,28 @@
 
   <div class="pane output" id="outputPane">
 
+  <section class="card setup" id="setupCard" hidden>
+    <h2>Set up Printshop</h2>
+    <p class="muted small">Three steps, once per computer. This card goes away when all three are done.</p>
+    <ol class="steps">
+      <li id="stepLicence">
+        <span class="tick" aria-hidden="true">1</span>
+        <div><b>Enter your licence key</b><p class="muted small" id="stepLicenceText"></p></div>
+        <button id="stepLicenceGo" class="ghost small">Enter key</button>
+      </li>
+      <li id="stepInstall">
+        <span class="tick" aria-hidden="true">2</span>
+        <div><b>Install Codex CLI</b><p class="muted small" id="stepInstallText"></p></div>
+        <button id="stepInstallGo" class="ghost small">Codex settings</button>
+      </li>
+      <li id="stepLogin">
+        <span class="tick" aria-hidden="true">3</span>
+        <div><b>Sign in to Codex</b><p class="muted small" id="stepLoginText"></p></div>
+        <button id="stepLoginGo" class="ghost small">Sign in</button>
+      </li>
+    </ol>
+  </section>
+
   <section class="empty" id="emptyState">
     <h2>Results show here</h2>
     <p class="muted">Write a prompt, pick a paper size and press Generate. Each variant lands here at full resolution, ready to export or to use as the reference for an edit.</p>
@@ -108,6 +130,7 @@
     <div class="labelrow">
       <h2 id="progressTitle">Generating</h2>
       <output id="progressStat" class="muted small"></output>
+      <button id="cancelJob" class="ghost small" hidden>Cancel</button>
     </div>
     <div class="bar"><div class="bar-fill" id="progressFill"></div></div>
     <p id="jobNote" class="banner warn" hidden></p>
@@ -192,6 +215,7 @@
     <div class="actions">
       <output id="selectedLabel" class="muted">Nothing selected</output>
       <button id="saveExport" disabled>Export</button>
+      <button id="cancelExport" class="ghost" hidden>Cancel</button>
     </div>
     <p id="pdfError" class="error" hidden></p>
   </section>
@@ -211,144 +235,168 @@
 </main>
 
 <div id="settingsPane" class="overlay" hidden>
-  <div class="card sheet">
-    <h2>Settings</h2>
-
-    <div class="licence-row">
-      <p class="small"><span class="muted">Licence</span><br><b id="licenceSummary">—</b></p>
-      <span class="btns">
-        <button id="upgradeFromSettings" class="ghost small" hidden>Upgrade to Pro</button>
-        <button id="changeLicence" class="ghost small">Change key</button>
-      </span>
+  <div class="card sheet settings" role="dialog" aria-labelledby="settingsTitle">
+    <div class="settings-top">
+      <h2 id="settingsTitle">Settings</h2>
+      <button id="closeSettings" class="ghost small">Close</button>
     </div>
 
-    <label class="field">
-      <span>Output folder</span>
-      <input type="text" id="outputDir" spellcheck="false">
-    </label>
+    <div class="settings-body">
+    <nav class="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+      <button type="button" role="tab" data-tab="licence" aria-selected="true">Licence</button>
+      <button type="button" role="tab" data-tab="codex" aria-selected="false">Codex</button>
+      <button type="button" role="tab" data-tab="files" aria-selected="false">Files</button>
+      <button type="button" role="tab" data-tab="header" aria-selected="false">Sticker header</button>
+    </nav>
+    <div class="settings-panels">
+    <section class="set-group" role="tabpanel" data-panel="licence">
+      <h3 class="small-head">Licence</h3>
+      <div class="licence-row">
+        <p class="small"><b id="licenceSummary">—</b></p>
+        <span class="btns">
+          <button id="upgradeFromSettings" class="ghost small" hidden>Upgrade to Pro</button>
+          <button id="changeLicence" class="ghost small">Change key</button>
+        </span>
+      </div>
+    </section>
 
-    <label class="field">
-      <span>CMYK profile (.icc)</span>
-      <input type="text" id="iccPath" spellcheck="false" placeholder="none — required for CMYK export">
-    </label>
+    <section class="set-group" role="tabpanel" data-panel="codex" hidden>
+      <h3 class="small-head">Codex</h3>
+      <p class="muted small" id="codexState"></p>
+      <div class="actions">
+        <p class="muted small" id="codexLoginState"></p>
+        <span class="btns">
+          <button id="codexLogout" class="ghost small" hidden>Sign out</button>
+          <button id="codexLogin" class="ghost small">Sign in to Codex</button>
+        </span>
+      </div>
+      <label class="field">
+        <span>Codex CLI path</span>
+        <input type="text" id="codexPath" spellcheck="false" placeholder="auto-detected">
+      </label>
+    </section>
 
-    <h3 class="small-head">Sticker sheet header</h3>
-    <p class="muted small">Printed across the top of sticker sheets when <b>Shop header</b> is ticked. Leave a box blank to skip it.</p>
-    <div class="row">
-      <label class="field grow">
-        <span>Shop name</span>
-        <input type="text" id="headerName" placeholder="ECO GLOBAL PRINTING">
-      </label>
-      <label class="field grow">
-        <span>Tagline (under name)</span>
-        <input type="text" id="headerTagline" placeholder="Siap dalam 1 jam">
-      </label>
-    </div>
-    <div class="row">
-      <label class="field grow">
-        <span>Order label</span>
-        <input type="text" id="headerLabel" placeholder="Untuk Tempahan:">
-      </label>
-      <label class="field grow">
-        <span>Phone</span>
-        <input type="text" id="headerPhone" placeholder="013-712 9937">
-      </label>
-    </div>
-    <label class="field">
-      <span>Extra line (under phone)</span>
-      <input type="text" id="headerExtra" placeholder="Lot 12, Jalan Besar · @ecoglobalprinting">
-    </label>
-    <label class="field">
-      <span>QR code link</span>
-      <input type="text" id="headerQr" spellcheck="false" placeholder="https://wa.me/60137129937">
-    </label>
-    <label class="field">
-      <span>Logo image</span>
-      <input type="text" id="headerLogoPath" spellcheck="false" placeholder="none">
-    </label>
-    <div class="actions"><span></span><button id="browseLogo" class="ghost small">Logo…</button></div>
+    <section class="set-group" role="tabpanel" data-panel="files" hidden>
+      <h3 class="small-head">Files</h3>
+      <div class="row">
+        <label class="field grow">
+          <span>Output folder</span>
+          <input type="text" id="outputDir" spellcheck="false">
+        </label>
+        <button id="browseFolder" class="ghost small browse">Choose…</button>
+      </div>
+      <div class="row">
+        <label class="field grow">
+          <span>CMYK profile (.icc)</span>
+          <input type="text" id="iccPath" spellcheck="false" placeholder="none — required for CMYK export">
+        </label>
+        <button id="browseIcc" class="ghost small browse">Choose…</button>
+      </div>
+    </section>
 
-    <div class="row">
-      <label class="field grow">
-        <span>Layout</span>
-        <select id="headerLayout">
-          <option value="brand-left">Name left · QR + contact right</option>
-          <option value="brand-right">QR + contact left · name right</option>
-          <option value="brand-centre">QR left · name centre · contact right</option>
-        </select>
+    <section class="set-group" role="tabpanel" data-panel="header" hidden>
+      <h3 class="small-head">Sticker sheet header</h3>
+      <p class="muted small">Printed across the top of sticker sheets when <b>Shop header</b> is ticked. Leave a box blank to skip it.</p>
+      <div class="row">
+        <label class="field grow">
+          <span>Shop name</span>
+          <input type="text" id="headerName" placeholder="ECO GLOBAL PRINTING">
+        </label>
+        <label class="field grow">
+          <span>Tagline (under name)</span>
+          <input type="text" id="headerTagline" placeholder="Siap dalam 1 jam">
+        </label>
+      </div>
+      <div class="row">
+        <label class="field grow">
+          <span>Order label</span>
+          <input type="text" id="headerLabel" placeholder="Untuk Tempahan:">
+        </label>
+        <label class="field grow">
+          <span>Phone</span>
+          <input type="text" id="headerPhone" placeholder="013-712 9937">
+        </label>
+      </div>
+      <label class="field">
+        <span>Extra line (under phone)</span>
+        <input type="text" id="headerExtra" placeholder="Lot 12, Jalan Besar · @ecoglobalprinting">
       </label>
       <label class="field">
-        <span>Height (mm)</span>
-        <input type="number" id="headerHeightMm" min="10" max="30" step="1" value="15">
+        <span>QR code link</span>
+        <input type="text" id="headerQr" spellcheck="false" placeholder="https://wa.me/60137129937">
       </label>
+      <div class="row">
+        <label class="field grow">
+          <span>Logo image</span>
+          <input type="text" id="headerLogoPath" spellcheck="false" placeholder="none">
+        </label>
+        <button id="browseLogo" class="ghost small browse">Choose…</button>
+      </div>
+
+      <div class="row">
+        <label class="field grow">
+          <span>Layout</span>
+          <select id="headerLayout">
+            <option value="brand-left">Name left · QR + contact right</option>
+            <option value="brand-right">QR + contact left · name right</option>
+            <option value="brand-centre">QR left · name centre · contact right</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Height (mm)</span>
+          <input type="number" id="headerHeightMm" min="10" max="30" step="1" value="15">
+        </label>
+      </div>
+      <div class="row">
+        <label class="field grow">
+          <span>Name size (%)</span>
+          <input type="number" id="headerNameScale" min="30" max="200" step="5" value="100">
+        </label>
+        <label class="field grow">
+          <span>Contact size (%)</span>
+          <input type="number" id="headerContactScale" min="30" max="200" step="5" value="100">
+        </label>
+        <label class="field">
+          <span>Text colour</span>
+          <input type="color" id="headerColor" value="#000000">
+        </label>
+      </div>
+      <div class="row">
+        <label class="field grow">
+          <span>Font</span>
+          <select id="headerFont">
+            <option value="helvetica">Helvetica</option>
+            <option value="times">Times</option>
+            <option value="courier">Courier</option>
+            <option value="custom">Font file (.ttf / .otf)…</option>
+          </select>
+        </label>
+        <label class="field grow" id="headerFontPathField" hidden>
+          <span>Font file</span>
+          <input type="text" id="headerFontPath" spellcheck="false" placeholder="none">
+        </label>
+      </div>
+      <figure class="header-preview">
+        <svg id="headerSvg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticker sheet header preview"></svg>
+        <figcaption id="headerPreviewMsg" class="muted small">Fill in a shop name, phone, QR link or logo to see the header.</figcaption>
+      </figure>
+      <p class="muted small">Black prints as pure black ink. The QR code always prints black so it scans. A font file is needed for Chinese, Tamil or Jawi text.</p>
+      <div class="actions">
+        <output id="headerTestMsg" class="muted small"></output>
+        <span class="btns">
+          <button id="browseFont" class="ghost small" hidden>Font…</button>
+          <button id="testHeader" class="ghost small">Test print header</button>
+        </span>
+      </div>
+    </section>
     </div>
-    <div class="row">
-      <label class="field grow">
-        <span>Name size (%)</span>
-        <input type="number" id="headerNameScale" min="30" max="200" step="5" value="100">
-      </label>
-      <label class="field grow">
-        <span>Contact size (%)</span>
-        <input type="number" id="headerContactScale" min="30" max="200" step="5" value="100">
-      </label>
-      <label class="field">
-        <span>Text colour</span>
-        <input type="color" id="headerColor" value="#000000">
-      </label>
-    </div>
-    <div class="row">
-      <label class="field grow">
-        <span>Font</span>
-        <select id="headerFont">
-          <option value="helvetica">Helvetica</option>
-          <option value="times">Times</option>
-          <option value="courier">Courier</option>
-          <option value="custom">Font file (.ttf / .otf)…</option>
-        </select>
-      </label>
-      <label class="field grow" id="headerFontPathField" hidden>
-        <span>Font file</span>
-        <input type="text" id="headerFontPath" spellcheck="false" placeholder="none">
-      </label>
-    </div>
-    <figure class="header-preview">
-      <svg id="headerSvg" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sticker sheet header preview"></svg>
-      <figcaption id="headerPreviewMsg" class="muted small">Fill in a shop name, phone, QR link or logo to see the header.</figcaption>
-    </figure>
-    <p class="muted small">Black prints as pure black ink. The QR code always prints black so it scans. A font file is needed for Chinese, Tamil or Jawi text.</p>
-    <div class="actions">
-      <output id="headerTestMsg" class="muted small"></output>
-      <span class="btns">
-        <button id="browseFont" class="ghost small" hidden>Font…</button>
-        <button id="testHeader" class="ghost small">Test print header</button>
-      </span>
     </div>
 
-    <label class="field">
-      <span>Codex CLI path</span>
-      <input type="text" id="codexPath" spellcheck="false" placeholder="auto-detected">
-    </label>
-    <p class="muted small" id="codexState"></p>
-    <p class="muted small" id="codexLoginState"></p>
-    <div class="actions">
-      <span></span>
-      <span class="btns">
-        <button id="codexLogout" class="ghost small" hidden>Sign out</button>
-        <button id="codexLogin" class="ghost small">Sign in to Codex</button>
-      </span>
+    <div class="settings-foot">
+      <output id="settingsMsg" class="muted small"></output>
+      <p id="settingsError" class="error" hidden></p>
+      <button id="saveSettings">Save</button>
     </div>
-
-    <div class="actions">
-      <output id="settingsMsg" class="muted"></output>
-      <span class="btns">
-        <button id="browseFolder" class="ghost">Folder…</button>
-        <button id="browseIcc" class="ghost">Profile…</button>
-        <button id="saveSettings">Save</button>
-      </span>
-    </div>
-
-    <p id="settingsError" class="error" hidden></p>
-    <div class="actions"><span></span><button id="closeSettings" class="ghost">Close</button></div>
   </div>
 </div>
 
