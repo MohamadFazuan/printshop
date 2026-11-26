@@ -191,9 +191,15 @@ Issue licence keys (bank transfer, by hand). The script is not shipped in the ap
 node scripts/licence.js keygen     # once: private key to ~/.printshop-licensing/, prints PUBLIC_KEY for src/licence.js
 node scripts/licence.js issue --email buyer@example.com --tier pro --name "Kedai Cetak"   # basic | pro | custom [--machines n]
 node scripts/licence.js verify PS1.…
+node scripts/licence.js list          # every key issued, from ~/.printshop-licensing/issued.csv
+node scripts/licence.js revoke <id>   # marks it revoked and prints the line for REVOKED_IDS
 ```
 
-Back up `~/.printshop-licensing/licence-private.pem`. Lose it and every key has to be reissued with a new app build.
+Every issued key is logged to `~/.printshop-licensing/issued.csv` (id, date, tier, email, name). To cancel a refunded or leaked key, run `revoke`, add the printed id to `REVOKED_IDS` in `src/licence.js` and release: the key stops working on each computer once it runs that release, and the licence screen says it was withdrawn.
+
+Back up `~/.printshop-licensing/` (the private key and the register) to a password manager and one offline copy. Lose the private key and every key has to be reissued with a new app build.
+
+**Codex version.** `CODEX_TESTED` in `src/core.js` is the oldest Codex every job type was run against. Older versions get a warning with the update command; newer ones are only noted in Copy diagnostics. Raise it after testing a new Codex release.
 
 Build an installer locally:
 
@@ -226,9 +232,11 @@ node build/make-icon.js
 src/core.js              units, presets, aspect maths, the Codex brief,
                          PDF geometry — pure, no Electron, fully tested
 src/cutline.js           cut lines: contour trace, shapes, sheet tiling — pure, tested
-src/main.js              Codex process, file writes, IPC — all privileged code
+src/main.js              Codex process, file writes, IPC, app:// protocol — all privileged code
+src/guard.js             checks on paths the renderer sends — pure, tested
+src/licence.js           offline licence keys, tiers, revocation list
 src/preload.js           the entire renderer↔main surface
-src/renderer/            UI; no filesystem, no network
+src/renderer/            UI, served over app://; no filesystem, no network
 test/verify.js           exercises src/core.js directly
 build/make-icon.js       generates build/icon.png with no image dependency
 ```
@@ -239,4 +247,4 @@ Sizes live in one table in `src/core.js`, declared in their native unit — **ad
 
 ## 🚧 Limits
 
-No crop marks, no registration marks except the optional cutting marks on sticker sheets, and no bleed except on sticker cuts, no multi-page documents, no job history browser, no auto-update. Resolution starts at what the image model spends (~1.5 MP); AI upscale lifts that up to 4×, which covers paper sizes but leaves large-format work a starting point rather than a finished file. Generated artwork is subject to OpenAI's usage policies; a rejected prompt surfaces their message verbatim.
+No crop marks, no registration marks except the optional cutting marks on sticker sheets, and no bleed except on sticker cuts, no multi-page documents, no job history browser, no auto-update (the app says when a new version is out and links to the download; installing stays manual until builds are signed). Resolution starts at what the image model spends (~1.5 MP); AI upscale lifts that up to 4×, which covers paper sizes but leaves large-format work a starting point rather than a finished file. Generated artwork is subject to OpenAI's usage policies; a rejected prompt surfaces their message verbatim.

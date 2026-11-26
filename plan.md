@@ -31,7 +31,7 @@ Done as: session allowlist of job folders (`jobDirs` in `src/main.js`, checks in
   - On: `runAsNode=false`, `enableNodeOptionsEnvironmentVariable=false`, `enableNodeCliInspectArguments=false`, `enableEmbeddedAsarIntegrityValidation`, `onlyLoadAppFromAsar`, `resetAdHocDarwinSignature`.
   - Verified on a local arm64 build: launches, IPC + upscaler work, a byte-patched `app.asar` is refused (`ASAR Integrity Violation`).
   - `resetAdHocDarwinSignature` is required: without it the unsigned arm64 app is SIGKILLed (`Code Signature Invalid`) at launch.
-  - `grantFileProtocolExtraPrivileges` stays on: turning it off makes `loadFile` from `app.asar` fail (`chrome-error://`). Follow-up: serve the renderer over a custom `app://` protocol, then turn it off.
+  - `grantFileProtocolExtraPrivileges` was left on at first (turning it off broke `loadFile` from `app.asar`); now off since the renderer moved to `app://` (Phase 3).
   - Limit: while builds are unsigned, someone can also rewrite the hash in `Info.plist`. Integrity becomes strong only with signing (item 8).
 - [x] **11. Cancel button** for generate and upscale
   - Main tracks running jobs by kind (`activeJobs`); `job:cancel` kills their process trees with `killTree` and stops retries. Saved images are kept; a job cancelled before any image lands removes its empty folder.
@@ -43,6 +43,10 @@ Done as: session allowlist of job folders (`jobDirs` in `src/main.js`, checks in
 
 - [ ] **8. Code signing.** Mac notarization first (Apple Developer, USD 99/yr); Windows certificate later. Removes the "damaged"/SmartScreen drop-off for shop staff.
 - [ ] **9. Auto-update** with `electron-updater` on GitHub Releases (needs signed Mac builds).
+  - Interim done 2026-11-27: on start the app asks GitHub for the latest release and shows a *new version* banner with Download (opens the releases page). No user data sent; off switch in Settings → Licence; privacy page updated.
+- [x] **Mac first-launch instructions** (2026-11-27): right-click → Open no longer works on macOS 15+. README, staff guide, site and release notes now say Privacy & Security → Open Anyway.
+- [x] **In-app Codex install steps** (2026-11-27): Settings → Codex shows OpenAI's one-line standalone installer (no Node.js) with a Copy button when Codex is missing. Windows standalone path auto-detected.
+- [x] **`app://` protocol** (2026-11-27): renderer and images served over `app://`; only this session's job images and chosen references are served; CSP drops `file:`; `grantFileProtocolExtraPrivileges` fuse off. Checked in a fused arm64 build.
 - [x] **10. Pin CI actions to commit SHAs** (done 2026-11-26: checkout v4.4.0, setup-node v4.4.0, upload-artifact v4.6.2, action-gh-release v2.6.2; `.github/dependabot.yml` opens weekly pin updates) (`actions/checkout`, `setup-node`, `upload-artifact`, `softprops/action-gh-release`). The workflow has `contents: write`.
 - [x] **14. "Copy diagnostics" button** (done 2026-11-26: Settings → Licence → Support, and beside Try again on a failed job; licence id only, no email): app version, OS, Codex version, last error, copied to clipboard for WhatsApp support. No server.
 
@@ -53,12 +57,12 @@ Done as: session allowlist of job folders (`jobDirs` in `src/main.js`, checks in
   - (b) bind key to a machine ID in the payload and reissue on machine change.
   - Do this when key sharing actually shows up.
 - [ ] **15. Back up signing key** `~/.printshop-licensing/licence-private.pem`: password manager plus an offline copy. Lose it and no new key the shipped app accepts can be issued.
-- [ ] **16. Key register + revocation**: log every issued key (id, email, tier, date); ship a `REVOKED_IDS` list in `src/licence.js` checked in `verifyLicence`.
-- [ ] **17. Codex version guard**: pin a tested Codex version range in `findCodex`; warn when outside it. OpenAI CLI changes are the biggest dependency risk.
+- [x] **16. Key register + revocation** (done 2026-11-27): `scripts/licence.js` logs every issued key to `~/.printshop-licensing/issued.csv`, with `list` and `revoke <id>`; `REVOKED_IDS` in `src/licence.js` is checked in `verifyLicence`, and the licence screen says when a saved key was withdrawn. Keys issued before this are not in the register: add them by hand.
+- [x] **17. Codex version guard** (done 2026-11-27): `CODEX_TESTED` = 0.167.0 in `src/core.js`. Older Codex warns with the update command; newer is noted in diagnostics only. A Codex that rejects our flags fails at once with update advice instead of retrying.
 - [ ] **12. Price copy sync**: keep the "Upgrade for RM 30" message in `assertAllowed` (`src/licence.js:112`) in step with the site whenever prices change.
 
 ## Housekeeping
 
-- [ ] Commit or discard the uncommitted changes in `site/index.html`, `src/renderer/app.js`, `src/renderer/index.html`, `src/renderer/style.css` before tagging.
+- [x] Commit or discard the uncommitted changes in `site/index.html`, `src/renderer/app.js`, `src/renderer/index.html`, `src/renderer/style.css` before tagging.
 - [ ] Never surface verbatim error text (which contains local paths) to any future remote service.
-- [ ] Bump version, tag `v1.2.0`, and let CI attach the installers.
+- [ ] Bump version (done: 1.2.0 in `package.json`), tag `v1.2.0`, and let CI attach the installers. Then point the site's static download links at 1.2.0.
