@@ -99,6 +99,28 @@
 
   <div class="pane output" id="outputPane">
 
+  <section class="card setup" id="setupCard" hidden>
+    <h2>Set up Printshop</h2>
+    <p class="muted small">Three steps, once per computer. This card goes away when all three are done.</p>
+    <ol class="steps">
+      <li id="stepLicence">
+        <span class="tick" aria-hidden="true">1</span>
+        <div><b>Enter your licence key</b><p class="muted small" id="stepLicenceText"></p></div>
+        <button id="stepLicenceGo" class="ghost small">Enter key</button>
+      </li>
+      <li id="stepInstall">
+        <span class="tick" aria-hidden="true">2</span>
+        <div><b>Install Codex CLI</b><p class="muted small" id="stepInstallText"></p></div>
+        <button id="stepInstallGo" class="ghost small">Codex settings</button>
+      </li>
+      <li id="stepLogin">
+        <span class="tick" aria-hidden="true">3</span>
+        <div><b>Sign in to Codex</b><p class="muted small" id="stepLoginText"></p></div>
+        <button id="stepLoginGo" class="ghost small">Sign in</button>
+      </li>
+    </ol>
+  </section>
+
   <section class="empty" id="emptyState">
     <h2>Results show here</h2>
     <p class="muted">Write a prompt, pick a paper size and press Generate. Each variant lands here at full resolution, ready to export or to use as the reference for an edit.</p>

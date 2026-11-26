@@ -10,6 +10,7 @@ let selectedFile = null
 let selectedIndex = 0
 let promptBeforeCodex = null
 let codexFound = null
+let codexLoggedIn = false
 let upscaleAvailable = false
 let exporting = false
 let references = []
@@ -297,7 +298,70 @@ function showLicence (summary) {
   document.querySelector('input[name="format"][value="tiff"]').disabled = false
   refreshExportOptions()
   updateCutPreview()
+  renderSetup()
 }
+
+// ---------------------------------------------------------------------------
+// First-run checklist. Each step that is not done says what to do next, so a
+// new shop never meets the missing piece as a failure minutes into a job.
+// ---------------------------------------------------------------------------
+
+function setupStep (id, done, text, { go = true } = {}) {
+  $(id).classList.toggle('done', done)
+  $(`${id}Text`).textContent = text
+  $(`${id}Go`).hidden = done || !go
+  $(id).querySelector('.tick').textContent = done ? '✓' : $(id).querySelector('.tick').dataset.n
+}
+
+function renderSetup () {
+  if (!catalog) return
+  setupStep('stepLicence', Boolean(licence), licence
+    ? `${licence.tierLabel} · ${licence.email}`
+    : 'Paste the key you received on WhatsApp. No key yet? Buy one from the licence screen.')
+  setupStep('stepInstall', Boolean(codexFound), codexFound
+    ? `Found ${codexFound.version}`
+    : 'Printshop makes artwork through Codex CLI on your ChatGPT plan. Install it, then come back to this window.')
+  setupStep('stepLogin', codexLoggedIn, codexLoggedIn
+    ? 'Signed in'
+    : codexFound ? 'Opens your browser to sign in with your ChatGPT account.' : 'Available once Codex is installed.',
+  { go: Boolean(codexFound) })
+  $('setupCard').hidden = Boolean(licence && codexFound && codexLoggedIn)
+}
+
+for (const li of document.querySelectorAll('.steps li')) {
+  const tick = li.querySelector('.tick')
+  tick.dataset.n = tick.textContent
+}
+
+// Re-check Codex when the window comes back into focus while setup is open:
+// the usual way to finish a step is to install or sign in elsewhere.
+let setupChecking = false
+window.addEventListener('focus', async () => {
+  if ($('setupCard').hidden || setupChecking || !catalog) return
+  setupChecking = true
+  try {
+    await detectCodex()
+    await refreshCodexLogin()
+    refresh()
+  } finally {
+    setupChecking = false
+  }
+})
+
+$('stepLicenceGo').addEventListener('click', () => openLicencePane(true))
+$('stepInstallGo').addEventListener('click', () => openSettings('codex'))
+$('stepLoginGo').addEventListener('click', async () => {
+  const button = $('stepLoginGo')
+  button.disabled = true
+  button.textContent = 'Browser opened…'
+  $('stepLoginText').textContent = 'Finish sign-in in your browser, then come back here.'
+  const result = await api.codexLogin()
+  button.disabled = false
+  button.textContent = 'Sign in'
+  await refreshCodexLogin()
+  if (!result.ok && !codexLoggedIn) $('stepLoginText').textContent = result.error
+  refresh()
+})
 
 function openLicencePane (canCancel) {
   $('licenceKey').value = ''
@@ -449,6 +513,8 @@ async function refreshCodexLogin () {
     : 'Codex CLI not installed.'
   $('codexLogin').hidden = !status.installed || status.loggedIn
   $('codexLogout').hidden = !status.loggedIn
+  codexLoggedIn = Boolean(status.installed && status.loggedIn)
+  renderSetup()
 }
 
 // Codex is the whole engine now — without it the app cannot generate at all.
@@ -463,8 +529,7 @@ async function detectCodex () {
   const warning = $('codexWarning')
   if (codexFound) hide(warning)
   else show(warning, 'Codex CLI not found. Printshop generates artwork through Codex on your ChatGPT plan, so it cannot generate until Codex is installed and signed in.')
-
-  if (!codexFound) openSettings('codex')
+  renderSetup()
 }
 
 async function loadSettings () {

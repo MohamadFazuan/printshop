@@ -368,3 +368,12 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
   .settings-nav { width: auto; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .settings-nav button { white-space: nowrap; }
 }
+
+/* First-run checklist: shown in place of the empty state until all three steps are done. */
+.steps { list-style: none; margin: 4px 0 0; padding: 0; }
+.steps li { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--line); }
+.steps li > div { flex: 1; min-width: 0; }
+.steps li p { margin: 2px 0 0; }
+.steps .tick { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font-size: 12px; color: var(--muted); }
+.steps li.done .tick { background: var(--ink); border-color: var(--ink); color: #fff; }
+.steps li.done b { color: var(--muted); font-weight: 400; }
