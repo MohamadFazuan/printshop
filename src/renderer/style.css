@@ -385,3 +385,4 @@ button.link { background: none; border: 0; padding: 0; color: inherit; text-deco
 .install-help li { margin: 6px 0; }
 .copyline { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .copyline code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; user-select: all; }
+.banner.update { color: var(--ink); }

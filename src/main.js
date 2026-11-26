@@ -1,6 +1,6 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const os = require('node:os')
@@ -100,7 +100,7 @@ const {
   PT_PER_UNIT, UNITS, SIZE_PRESETS,
   EXPORT_FORMATS, COLOUR_SPACES, CMYK_CAPABLE,
   renderSizeFor, aspectFor, pngSize, sizeToPoints, buildPdf, slugify, today,
-  watermarkSvg, pixelCanvas, clip, classifyFailure, codexVersionCheck, CODEX_TESTED, generateInstruction, upscalePlan,
+  watermarkSvg, pixelCanvas, clip, classifyFailure, codexVersionCheck, CODEX_TESTED, isNewerVersion, generateInstruction, upscalePlan,
   stickerImageRect, stickerLayout, buildHeaderProof, headerPreview, HEADER_LAYOUTS
 } = require('./core')
 const {
@@ -644,6 +644,7 @@ handle('settings:save', async (payload) => {
   }
   if (typeof iccPath === 'string') config.iccPath = iccPath.trim()
   if (typeof watermarkText === 'string') config.watermarkText = watermarkText
+  if (typeof payload.checkUpdates === 'boolean') config.checkUpdates = payload.checkUpdates
   await writeConfig(config)
   return true
 })
@@ -1335,6 +1336,46 @@ handle('diagnostics:copy', async () => {
   const text = lines.join('\n')
   clipboard.writeText(text)
   return text
+})
+
+// ---------------------------------------------------------------------------
+// New-version notice. Asks GitHub once per launch for the latest release; the
+// request carries no licence, email or usage, only what any browser sends.
+// Unsigned Mac builds cannot update themselves, so this points at the
+// download page rather than installing anything. Off in Settings → Licence.
+// ---------------------------------------------------------------------------
+
+const RELEASES_API = 'https://api.github.com/repos/MohamadFazuan/printshop/releases/latest'
+const RELEASES_PAGE = 'https://github.com/MohamadFazuan/printshop/releases/latest'
+
+handle('update:check', async () => {
+  const config = await readConfig()
+  if (config.checkUpdates === false) return { available: false, disabled: true }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await net.fetch(RELEASES_API, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Printshop' },
+      signal: controller.signal
+    })
+    if (!response.ok) return { available: false }
+    const release = await response.json()
+    const tag = String(release.tag_name || '')
+    return isNewerVersion(tag, app.getVersion())
+      ? { available: true, version: tag.replace(/^v/, ''), current: app.getVersion() }
+      : { available: false }
+  } catch {
+    // Offline is normal for a shop; say nothing.
+    return { available: false }
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+// Fixed destination, like licence:buy: the renderer never supplies the URL.
+handle('update:open', async () => {
+  await shell.openExternal(RELEASES_PAGE)
+  return true
 })
 
 handle('licence:get', async () => licenceInfo())

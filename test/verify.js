@@ -14,7 +14,7 @@ const {
   watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE,
   upscalePlan, stickerLayout, stickerImageRect
 } = require('../src/core')
-const { codexVersionCheck, CODEX_TESTED } = require('../src/core')
+const { codexVersionCheck, CODEX_TESTED, isNewerVersion } = require('../src/core')
 const cutline = require('../src/cutline')
 const { PDFName, PDFDict } = require('pdf-lib')
 
@@ -298,6 +298,15 @@ test('Codex older than the tested version warns; same or newer does not', () => 
   assert.equal(codexVersionCheck('codex-cli 0.200.0', '0.167.0').message, '')
   assert.equal(codexVersionCheck('something else').status, 'unknown')
   assert.equal(codexVersionCheck('').status, 'unknown')
+})
+
+test('the new-version notice fires only for a strictly later release', () => {
+  assert.equal(isNewerVersion('v1.2.0', '1.1.0'), true)
+  assert.equal(isNewerVersion('v1.10.0', '1.9.3'), true, 'compared as numbers, not text')
+  assert.equal(isNewerVersion('v1.1.0', '1.1.0'), false)
+  assert.equal(isNewerVersion('v1.0.9', '1.1.0'), false)
+  assert.equal(isNewerVersion('', '1.1.0'), false)
+  assert.equal(isNewerVersion('latest', '1.1.0'), false)
 })
 
 test('a one-off slip is worth a second attempt', () => {

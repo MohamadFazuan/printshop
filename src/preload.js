@@ -39,5 +39,7 @@ contextBridge.exposeInMainWorld('printshop', {
   setLicence: call('licence:set'),
   buyLicence: call('licence:buy'),
   reveal: call('shell:reveal'),
-  copyDiagnostics: call('diagnostics:copy')
+  copyDiagnostics: call('diagnostics:copy'),
+  checkUpdate: call('update:check'),
+  openUpdate: call('update:open')
 })

@@ -558,6 +558,7 @@ async function loadSettings () {
   $('outputDir').value = settings.outputDir
   $('iccPath').value = settings.iccPath || ''
   $('watermarkText').value = settings.watermarkText || 'PROOF'
+  $('checkUpdates').checked = settings.checkUpdates !== false
   for (const key of HEADER_FIELDS) $(key).value = settings[key] ?? ''
   refreshHeaderFont()
   scheduleHeaderPreview()
@@ -1367,6 +1368,16 @@ $('browseFolder').addEventListener('click', async () => {
   if (folder) $('outputDir').value = folder
 })
 
+async function checkForUpdate () {
+  const result = await api.checkUpdate()
+  if (!result.ok || !result.data.available) return
+  const { version, current } = result.data
+  $('updateText').textContent = `Printshop ${version} is out (you have ${current}). Install it over this one; your licence and settings stay.`
+  $('updateBanner').hidden = false
+}
+$('updateDownload').addEventListener('click', () => api.openUpdate())
+$('updateLater').addEventListener('click', () => { $('updateBanner').hidden = true })
+
 $('saveSettings').addEventListener('click', async () => {
   hide($('settingsError'))
   try {
@@ -1375,6 +1386,7 @@ $('saveSettings').addEventListener('click', async () => {
       codexPath: $('codexPath').value,
       iccPath: $('iccPath').value,
       watermarkText: $('watermarkText').value,
+      checkUpdates: $('checkUpdates').checked,
       ...headerValues()
     }), $('settingsError'))
     $('settingsMsg').textContent = 'Saved.'
@@ -1385,4 +1397,4 @@ $('saveSettings').addEventListener('click', async () => {
   } catch { /* message already rendered */ }
 })
 
-boot()
+boot().then(checkForUpdate)

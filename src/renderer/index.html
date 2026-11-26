@@ -19,6 +19,13 @@
   <div class="pane compose">
 
   <p id="codexWarning" class="banner" hidden></p>
+  <div id="updateBanner" class="banner update" hidden>
+    <span id="updateText"></span>
+    <span class="btns">
+      <button id="updateLater" class="ghost small">Later</button>
+      <button id="updateDownload" class="small">Download</button>
+    </span>
+  </div>
 
   <section class="card" id="composeCard">
     <div class="field">
@@ -264,6 +271,7 @@
         <p class="small muted" id="diagnosticsNote">Something not working? Copy the diagnostics and paste them into WhatsApp with your question.</p>
         <span class="btns"><button id="copyDiagnostics" class="ghost small">Copy diagnostics</button></span>
       </div>
+      <label class="radio small"><input type="checkbox" id="checkUpdates" checked> Tell me when a new version is out (asks GitHub once per start; sends nothing about you)</label>
     </section>
 
     <section class="set-group" role="tabpanel" data-panel="codex" hidden>

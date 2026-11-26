@@ -271,6 +271,15 @@ function codexVersionCheck (versionText, tested = CODEX_TESTED) {
   return { status: order > 0 ? 'newer' : 'ok', version: shown, message: '' }
 }
 
+// True when a release tag such as `v1.3.0` is a later version than the
+// running app. Anything unparseable is not newer, so a malformed answer from
+// GitHub never shows a notice.
+function isNewerVersion (tag, current) {
+  const a = parseVersion(tag)
+  const b = parseVersion(current)
+  return Boolean(a && b && compareVersions(a, b) > 0)
+}
+
 function classifyFailure (raw, { saved = 0, wanted = 0, timedOut = false } = {}) {
   const text = String(raw || '').toLowerCase()
   const partly = saved > 0 ? ` ${saved} of ${wanted} image${saved === 1 ? '' : 's'} was kept.` : ''
@@ -849,6 +858,7 @@ module.exports = {
   classifyFailure,
   CODEX_TESTED,
   codexVersionCheck,
+  isNewerVersion,
   generateInstruction,
   dpiAdvice,
   pngSize,
