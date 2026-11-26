@@ -1,11 +1,10 @@
 'use strict'
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, net, protocol } = require('electron')
 const path = require('node:path')
 const fs = require('node:fs/promises')
 const os = require('node:os')
 const crypto = require('node:crypto')
-const { pathToFileURL } = require('node:url')
 const { execFile, spawn } = require('node:child_process')
 const { promisify } = require('node:util')
 const QRCode = require('qrcode')
@@ -100,7 +99,7 @@ const {
   PT_PER_UNIT, UNITS, SIZE_PRESETS,
   EXPORT_FORMATS, COLOUR_SPACES, CMYK_CAPABLE,
   renderSizeFor, aspectFor, pngSize, sizeToPoints, buildPdf, slugify, today,
-  watermarkSvg, pixelCanvas, clip, classifyFailure, generateInstruction, upscalePlan,
+  watermarkSvg, pixelCanvas, clip, classifyFailure, codexVersionCheck, CODEX_TESTED, isNewerVersion, generateInstruction, upscalePlan,
   stickerImageRect, stickerLayout, buildHeaderProof, headerPreview, HEADER_LAYOUTS
 } = require('./core')
 const {
@@ -109,7 +108,7 @@ const {
   clampInset, MARK_INSET_PT, MARK_INSET_MIN_MM, MARK_INSET_MAX_MM, clampHeaderHeight, SHEETS: SHEET_SIZES
 } = require('./cutline')
 const { verifyLicence, featuresForCut, featuresForExport, assertAllowed, WHATSAPP } = require('./licence')
-const { isJobVariant, checkCodexBinary } = require('./guard')
+const { isJobVariant, isInside, checkCodexBinary } = require('./guard')
 
 // ---------------------------------------------------------------------------
 // Job folders made this session. Every handler that reads, writes beside or
@@ -156,16 +155,27 @@ async function readConfig () {
 // ---------------------------------------------------------------------------
 
 let licence = null
+// Why the saved key no longer unlocks the app (revoked, or from a newer
+// version), so the licence screen can say so instead of just asking again.
+let savedLicenceProblem = null
 
 function licencePath () {
   return path.join(app.getPath('userData'), 'licence.key')
 }
 
 async function loadLicence () {
+  licence = null
+  savedLicenceProblem = null
+  let text
   try {
-    licence = verifyLicence(await fs.readFile(licencePath(), 'utf8'))
+    text = await fs.readFile(licencePath(), 'utf8')
   } catch {
-    licence = null
+    return
+  }
+  try {
+    licence = verifyLicence(text)
+  } catch (error) {
+    savedLicenceProblem = error.message
   }
 }
 
@@ -190,11 +200,16 @@ async function writeConfig (config) {
 // IPC
 // ---------------------------------------------------------------------------
 
+// The most recent error any handler returned, for Copy diagnostics. A shop
+// reports a problem after the fact, when the message is no longer on screen.
+let lastError = null
+
 function handle (channel, fn) {
   ipcMain.handle(channel, async (_event, payload) => {
     try {
       return { ok: true, data: await fn(payload ?? {}) }
     } catch (error) {
+      if (!error.cancelled) lastError = { channel, message: error.message || String(error), at: new Date() }
       // Verbatim — a swallowed billing or content-policy error looks like a crash.
       return { ok: false, error: error.message || String(error) }
     }
@@ -272,7 +287,10 @@ const CODEX_CANDIDATES = process.platform === 'win32'
   ? [
       vendorExe(path.join(process.env.APPDATA || '', 'npm')),
       path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Links', 'codex.exe'),
-      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'codex', 'codex.exe')
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'codex', 'codex.exe'),
+      // OpenAI's standalone installer (install.ps1). It adds this folder to the
+      // user PATH, but an app already running keeps the PATH it started with.
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe')
     ]
   : [
       '/opt/homebrew/bin/codex',
@@ -334,7 +352,8 @@ async function findCodex (override) {
       tried.add(bin)
       try {
         const { stdout } = await execFileAsync(bin, ['--version'], { timeout: 10000 })
-        return { bin, version: stdout.trim() }
+        const version = stdout.trim()
+        return { bin, version, check: codexVersionCheck(version) }
       } catch { /* next candidate */ }
     }
   }
@@ -490,6 +509,18 @@ async function generateViaCodex ({ prompt, size, count, jobDir, codexBin, refere
   return { files, shortfall: count - files.length, reason: fatalMessage || lastMessage, timedOut, cancelled }
 }
 
+// OpenAI's own one-line installers, which need no Node.js. Shown in Settings
+// when Codex is missing; the shop pastes it into Terminal or PowerShell. The
+// app only copies the text: it never downloads or runs an installer itself.
+const CODEX_INSTALL = process.platform === 'win32'
+  ? { shell: 'PowerShell', command: 'powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"' }
+  : { shell: 'Terminal', command: 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' }
+
+handle('codex:installCommand', async ({ copy } = {}) => {
+  if (copy) clipboard.writeText(CODEX_INSTALL.command)
+  return { ...CODEX_INSTALL, platform: process.platform }
+})
+
 handle('codex:detect', async () => {
   const config = await readConfig()
   return await findCodex(config.codexPath)
@@ -612,6 +643,7 @@ handle('settings:save', async (payload) => {
   }
   if (typeof iccPath === 'string') config.iccPath = iccPath.trim()
   if (typeof watermarkText === 'string') config.watermarkText = watermarkText
+  if (typeof payload.checkUpdates === 'boolean') config.checkUpdates = payload.checkUpdates
   await writeConfig(config)
   return true
 })
@@ -705,9 +737,10 @@ const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 
 async function describeReference (file) {
   const { width, height, bytes } = await assertReadable(file)
+  mediaFiles.add(await fs.realpath(file))
   return {
     path: file,
-    url: pathToFileURL(file).href,
+    url: mediaUrl(file),
     name: path.basename(file),
     width,
     height,
@@ -871,7 +904,7 @@ handle('image:generate', async ({ prompt, size, count, referencePaths, reference
   return {
     jobDir,
     files,
-    urls: files.map((file) => pathToFileURL(file).href),
+    urls: files.map(mediaUrl),
     dims,
     renderSize
   }
@@ -1284,7 +1317,69 @@ handle('job:cancel', async ({ kind }) => {
   return true
 })
 
+// A plain-text summary for support, copied to the clipboard here so the
+// renderer needs no clipboard access. Holds the licence id but not the email:
+// the id is enough to find the buyer, and the text gets pasted into chats.
+handle('diagnostics:copy', async () => {
+  const config = await readConfig()
+  const found = await findCodex(config.codexPath)
+  const login = found ? await codexStatus(found.bin) : null
+  const lines = [
+    `Printshop ${app.getVersion()}${app.isPackaged ? '' : ' (development)'}`,
+    `${{ darwin: 'macOS', win32: 'Windows' }[process.platform] || process.platform} ${process.getSystemVersion()} · ${process.arch}`,
+    `Electron ${process.versions.electron}`,
+    `Licence: ${licence ? `${licence.tierLabel} · id ${licence.id}` : 'not activated'}`,
+    `Codex: ${found ? `${found.version} (${found.check.status}, tested ${CODEX_TESTED}) · ${login.loggedIn ? 'signed in' : 'not signed in'}` : 'not found'}`,
+    `AI upscaler: ${(await findUpscaler()) ? 'installed' : 'missing'}`,
+    `Last error: ${lastError ? `${lastError.at.toISOString()} · ${lastError.channel} · ${lastError.message}` : 'none this session'}`
+  ]
+  const text = lines.join('\n')
+  clipboard.writeText(text)
+  return text
+})
+
+// ---------------------------------------------------------------------------
+// New-version notice. Asks GitHub once per launch for the latest release; the
+// request carries no licence, email or usage, only what any browser sends.
+// Unsigned Mac builds cannot update themselves, so this points at the
+// download page rather than installing anything. Off in Settings → Licence.
+// ---------------------------------------------------------------------------
+
+const RELEASES_API = 'https://api.github.com/repos/MohamadFazuan/printshop/releases/latest'
+const RELEASES_PAGE = 'https://github.com/MohamadFazuan/printshop/releases/latest'
+
+handle('update:check', async () => {
+  const config = await readConfig()
+  if (config.checkUpdates === false) return { available: false, disabled: true }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await net.fetch(RELEASES_API, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Printshop' },
+      signal: controller.signal
+    })
+    if (!response.ok) return { available: false }
+    const release = await response.json()
+    const tag = String(release.tag_name || '')
+    return isNewerVersion(tag, app.getVersion())
+      ? { available: true, version: tag.replace(/^v/, ''), current: app.getVersion() }
+      : { available: false }
+  } catch {
+    // Offline is normal for a shop; say nothing.
+    return { available: false }
+  } finally {
+    clearTimeout(timer)
+  }
+})
+
+// Fixed destination, like licence:buy: the renderer never supplies the URL.
+handle('update:open', async () => {
+  await shell.openExternal(RELEASES_PAGE)
+  return true
+})
+
 handle('licence:get', async () => licenceInfo())
+handle('licence:problem', async () => (licence ? null : savedLicenceProblem))
 
 handle('licence:set', async ({ key }) => {
   const next = verifyLicence(key)
@@ -1292,6 +1387,7 @@ handle('licence:set', async ({ key }) => {
   await fs.mkdir(path.dirname(licencePath()), { recursive: true })
   await fs.writeFile(licencePath(), next.key + '\n', 'utf8')
   licence = next
+  savedLicenceProblem = null
   return licenceInfo()
 })
 
@@ -1316,6 +1412,69 @@ handle('shell:reveal', async ({ target }) => {
 })
 
 // ---------------------------------------------------------------------------
+// app:// protocol. The page and every image it shows come through here, not
+// file://, so the renderer can reach nothing on disk it was not handed:
+//   app://renderer/<file>  the UI, read from src/renderer (inside app.asar)
+//   app://media/<path>     a variant from a job this session, or a reference
+//                          image the shop picked, dropped or pasted
+// With file:// unused, the grantFileProtocolExtraPrivileges fuse is off.
+// ---------------------------------------------------------------------------
+
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'app', privileges: { standard: true, secure: true } }
+])
+
+const RENDERER_DIR = path.join(__dirname, 'renderer')
+// Real paths of reference images described to the renderer this session.
+const mediaFiles = new Set()
+
+const mediaUrl = (file) => `app://media/${encodeURIComponent(file)}`
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml'
+}
+
+const refuse = (status) => new Response(null, { status })
+
+async function serveApp (request) {
+  const url = new URL(request.url)
+  let asked
+  try {
+    asked = decodeURIComponent(url.pathname)
+  } catch {
+    return refuse(400)
+  }
+  let file
+  if (url.host === 'renderer') {
+    file = path.join(RENDERER_DIR, path.normalize(asked))
+    if (!isInside(RENDERER_DIR, file) || file === RENDERER_DIR) return refuse(404)
+  } else if (url.host === 'media') {
+    try {
+      file = await fs.realpath(asked.slice(1))
+    } catch {
+      return refuse(404)
+    }
+    if (!mediaFiles.has(file) && !isJobVariant(jobDirs, file)) return refuse(403)
+  } else {
+    return refuse(404)
+  }
+  try {
+    const body = await fs.readFile(file)
+    return new Response(body, { headers: { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' } })
+  } catch {
+    return refuse(404)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Window
 // ---------------------------------------------------------------------------
 
@@ -1334,7 +1493,7 @@ function createWindow () {
       sandbox: true
     }
   })
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'))
+  win.loadURL('app://renderer/index.html')
 }
 
 // The app is one local page with no links. Any attempt to navigate away, open
@@ -1347,6 +1506,7 @@ app.on('web-contents-created', (_event, contents) => {
 })
 
 app.whenReady().then(async () => {
+  protocol.handle('app', serveApp)
   await loadLicence()
   createWindow()
   prunePastedReferences()

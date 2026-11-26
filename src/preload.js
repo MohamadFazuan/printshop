@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('printshop', {
   testHeader: call('header:test'),
   previewHeader: call('header:preview'),
   detectCodex: call('codex:detect'),
+  codexInstallCommand: call('codex:installCommand'),
   codexStatus: call('codex:status'),
   codexLogin: call('codex:login'),
   codexLogout: call('codex:logout'),
@@ -34,7 +35,11 @@ contextBridge.exposeInMainWorld('printshop', {
   // One-way main → renderer stream; the renderer cannot send on this channel.
   onProgress: (callback) => ipcRenderer.on('job:progress', (_event, payload) => callback(payload)),
   licence: call('licence:get'),
+  licenceProblem: call('licence:problem'),
   setLicence: call('licence:set'),
   buyLicence: call('licence:buy'),
-  reveal: call('shell:reveal')
+  reveal: call('shell:reveal'),
+  copyDiagnostics: call('diagnostics:copy'),
+  checkUpdate: call('update:check'),
+  openUpdate: call('update:open')
 })

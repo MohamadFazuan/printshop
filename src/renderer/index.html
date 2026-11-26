@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; img-src 'self' file: data:; style-src 'self'; script-src 'self';">
+      content="default-src 'none'; img-src 'self' app://media data:; style-src 'self'; script-src 'self';">
 <title>Printshop</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -19,6 +19,13 @@
   <div class="pane compose">
 
   <p id="codexWarning" class="banner" hidden></p>
+  <div id="updateBanner" class="banner update" hidden>
+    <span id="updateText"></span>
+    <span class="btns">
+      <button id="updateLater" class="ghost small">Later</button>
+      <button id="updateDownload" class="small">Download</button>
+    </span>
+  </div>
 
   <section class="card" id="composeCard">
     <div class="field">
@@ -136,6 +143,7 @@
     <p id="jobNote" class="banner warn" hidden></p>
     <div class="actions" id="retryRow" hidden>
       <output class="muted small">Nothing is lost — images already saved stay in the job folder.</output>
+      <button id="copyJobDiagnostics" class="ghost small">Copy diagnostics</button>
       <button id="retryJob" class="ghost small">Try again</button>
     </div>
     <details class="logbox" open>
@@ -258,11 +266,27 @@
           <button id="changeLicence" class="ghost small">Change key</button>
         </span>
       </div>
+      <h3 class="small-head">Support</h3>
+      <div class="licence-row">
+        <p class="small muted" id="diagnosticsNote">Something not working? Copy the diagnostics and paste them into WhatsApp with your question.</p>
+        <span class="btns"><button id="copyDiagnostics" class="ghost small">Copy diagnostics</button></span>
+      </div>
+      <label class="radio small"><input type="checkbox" id="checkUpdates" checked> Tell me when a new version is out (asks GitHub once per start; sends nothing about you)</label>
     </section>
 
     <section class="set-group" role="tabpanel" data-panel="codex" hidden>
       <h3 class="small-head">Codex</h3>
       <p class="muted small" id="codexState"></p>
+      <div class="install-help" id="codexInstall" hidden>
+        <p class="small"><b>Install Codex</b> · about a minute, once per computer. No other software needed.</p>
+        <ol class="small">
+          <li id="codexInstallOpen">Open Terminal.</li>
+          <li>Paste this line and press Enter:
+            <div class="copyline"><code id="codexInstallCommand"></code><button id="copyCodexInstall" class="ghost small">Copy</button></div>
+          </li>
+          <li>When it says Codex is installed, come back here. Printshop finds it by itself, then press <b>Sign in to Codex</b>.</li>
+        </ol>
+      </div>
       <div class="actions">
         <p class="muted small" id="codexLoginState"></p>
         <span class="btns">

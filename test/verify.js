@@ -14,6 +14,7 @@ const {
   watermarkTiles, watermarkSvg, pixelCanvas, EXPORT_FORMATS, CMYK_CAPABLE,
   upscalePlan, stickerLayout, stickerImageRect
 } = require('../src/core')
+const { codexVersionCheck, CODEX_TESTED, isNewerVersion } = require('../src/core')
 const cutline = require('../src/cutline')
 const { PDFName, PDFDict } = require('pdf-lib')
 
@@ -274,6 +275,38 @@ test('causes that cannot change on a second attempt are all fatal', () => {
   ]) {
     assert.equal(classifyFailure(raw).fatal, true, raw)
   }
+})
+
+test('a Codex that rejects our flags is fatal and says to update Codex', () => {
+  for (const raw of [
+    "error: unexpected argument '--ignore-user-config' found",
+    'error: Found argument \'--ephemeral\' which wasn\'t expected, or isn\'t valid in this context',
+    'unknown option --sandbox'
+  ]) {
+    const verdict = classifyFailure(raw)
+    assert.equal(verdict.fatal, true, raw)
+    assert.match(verdict.message, /npm install -g @openai\/codex@latest/, raw)
+  }
+})
+
+test('Codex older than the tested version warns; same or newer does not', () => {
+  assert.equal(codexVersionCheck(`codex-cli ${CODEX_TESTED}`).status, 'ok')
+  assert.equal(codexVersionCheck('codex-cli 0.166.9', '0.167.0').status, 'old')
+  assert.match(codexVersionCheck('codex-cli 0.120.0', '0.167.0').message, /older than Printshop was tested with \(0\.167\.0\)/)
+  assert.equal(codexVersionCheck('codex-cli 0.167.1', '0.167.0').status, 'newer')
+  assert.equal(codexVersionCheck('codex-cli 1.0.0', '0.167.0').status, 'newer')
+  assert.equal(codexVersionCheck('codex-cli 0.200.0', '0.167.0').message, '')
+  assert.equal(codexVersionCheck('something else').status, 'unknown')
+  assert.equal(codexVersionCheck('').status, 'unknown')
+})
+
+test('the new-version notice fires only for a strictly later release', () => {
+  assert.equal(isNewerVersion('v1.2.0', '1.1.0'), true)
+  assert.equal(isNewerVersion('v1.10.0', '1.9.3'), true, 'compared as numbers, not text')
+  assert.equal(isNewerVersion('v1.1.0', '1.1.0'), false)
+  assert.equal(isNewerVersion('v1.0.9', '1.1.0'), false)
+  assert.equal(isNewerVersion('', '1.1.0'), false)
+  assert.equal(isNewerVersion('latest', '1.1.0'), false)
 })
 
 test('a one-off slip is worth a second attempt', () => {
@@ -856,6 +889,16 @@ test('a forged, tampered or foreign licence key is refused', () => {
   assert.throws(() => licence.verifyLicence(`PS1.${future}.${futureSig}`, pub), /newer Printshop/)
   assert.throws(() => licence.signLicence({ email: 'a@b.co', tier: 'gold' }, privateKey), /Unknown tier/)
   assert.throws(() => licence.signLicence({ email: '', tier: 'pro' }, privateKey), /email/)
+})
+
+test('a revoked key id is refused even though its signature is good', () => {
+  const { privateKey, pub } = testKeys()
+  const key = licence.signLicence({ email: 'a@b.co', tier: 'pro', id: 'dead0001' }, privateKey)
+  assert.equal(licence.verifyLicence(key, pub).id, 'dead0001')
+  assert.throws(() => licence.verifyLicence(key, pub, new Set(['dead0001'])), /withdrawn/)
+  assert.equal(licence.verifyLicence(key, pub, new Set(['other001'])).tier, 'pro')
+  // Every shipped entry has the shape scripts/licence.js issues.
+  for (const id of licence.REVOKED_IDS) assert.match(id, /^[0-9a-f]{8}$/)
 })
 
 test('Basic has no Pro features; Pro and Custom have all four', () => {

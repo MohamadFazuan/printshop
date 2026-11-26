@@ -1,7 +1,7 @@
 {
   "name": "printshop",
   "productName": "Printshop",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Prompt to print-ready PDF, at any paper size.",
   "main": "src/main.js",
   "author": "OC Global Tech",
@@ -41,7 +41,8 @@
       "enableNodeCliInspectArguments": false,
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true,
-      "resetAdHocDarwinSignature": true
+      "resetAdHocDarwinSignature": true,
+      "grantFileProtocolExtraPrivileges": false
     },
     "extraResources": [
       {

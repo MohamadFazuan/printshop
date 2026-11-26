@@ -319,8 +319,8 @@ function renderSetup () {
     ? `${licence.tierLabel} · ${licence.email}`
     : 'Paste the key you received on WhatsApp. No key yet? Buy one from the licence screen.')
   setupStep('stepInstall', Boolean(codexFound), codexFound
-    ? `Found ${codexFound.version}`
-    : 'Printshop makes artwork through Codex CLI on your ChatGPT plan. Install it, then come back to this window.')
+    ? (codexFound.check?.message || `Found ${codexFound.version}`)
+    : 'Printshop makes artwork through Codex CLI on your ChatGPT plan. Codex settings shows the one line to install it.')
   setupStep('stepLogin', codexLoggedIn, codexLoggedIn
     ? 'Signed in'
     : codexFound ? 'Opens your browser to sign in with your ChatGPT account.' : 'Available once Codex is installed.',
@@ -346,6 +346,13 @@ window.addEventListener('focus', async () => {
   } finally {
     setupChecking = false
   }
+})
+
+$('copyCodexInstall').addEventListener('click', async () => {
+  const button = $('copyCodexInstall')
+  const result = await api.codexInstallCommand({ copy: true })
+  button.textContent = result.ok ? 'Copied' : 'Could not copy'
+  setTimeout(() => { button.textContent = 'Copy' }, 2000)
 })
 
 $('stepLicenceGo').addEventListener('click', () => openLicencePane(true))
@@ -497,7 +504,11 @@ async function boot () {
   $('customUnit').value = 'mm'
 
   showLicence(unwrap(await api.licence()))
-  if (!licence) openLicencePane(false)
+  if (!licence) {
+    openLicencePane(false)
+    const problem = unwrap(await api.licenceProblem())
+    if (problem) show($('licenceError'), problem)
+  }
   await loadSettings()
   await detectCodex()
   await refreshCodexLogin()
@@ -526,8 +537,18 @@ async function detectCodex () {
     ? `Found ${codexFound.version} at ${codexFound.bin}`
     : 'Not found — install Codex CLI, or set its full path here.'
 
+  $('codexInstall').hidden = Boolean(codexFound)
+  if (!codexFound && !$('codexInstallCommand').textContent) {
+    const help = unwrap(await api.codexInstallCommand())
+    $('codexInstallCommand').textContent = help.command
+    $('codexInstallOpen').textContent = help.platform === 'win32'
+      ? 'Open PowerShell: press the Windows key, type PowerShell, press Enter.'
+      : 'Open Terminal: press ⌘ Space, type Terminal, press Enter.'
+  }
+
   const warning = $('codexWarning')
-  if (codexFound) hide(warning)
+  if (codexFound?.check?.status === 'old' || codexFound?.check?.status === 'unknown') show(warning, codexFound.check.message)
+  else if (codexFound) hide(warning)
   else show(warning, 'Codex CLI not found. Printshop generates artwork through Codex on your ChatGPT plan, so it cannot generate until Codex is installed and signed in.')
   renderSetup()
 }
@@ -537,6 +558,7 @@ async function loadSettings () {
   $('outputDir').value = settings.outputDir
   $('iccPath').value = settings.iccPath || ''
   $('watermarkText').value = settings.watermarkText || 'PROOF'
+  $('checkUpdates').checked = settings.checkUpdates !== false
   for (const key of HEADER_FIELDS) $(key).value = settings[key] ?? ''
   refreshHeaderFont()
   scheduleHeaderPreview()
@@ -1283,6 +1305,19 @@ document.addEventListener('paste', (event) => {
 $('generate').addEventListener('click', generate)
 $('saveExport').addEventListener('click', saveExport)
 
+// Copies a support summary (versions, Codex state, last error) to the
+// clipboard in the main process, then says so on the button for a moment.
+async function copyDiagnostics (button) {
+  const label = button.textContent
+  button.disabled = true
+  button.textContent = 'Copying…'
+  const result = await api.copyDiagnostics()
+  button.textContent = result.ok ? 'Copied' : 'Could not copy'
+  setTimeout(() => { button.textContent = label; button.disabled = false }, 2000)
+}
+$('copyDiagnostics').addEventListener('click', () => copyDiagnostics($('copyDiagnostics')))
+$('copyJobDiagnostics').addEventListener('click', () => copyDiagnostics($('copyJobDiagnostics')))
+
 // Cancel kills the running Codex or upscaler process in the main process.
 // Images already saved stay; the job's own handler reports the outcome.
 async function cancelJob (button, kind) {
@@ -1333,6 +1368,16 @@ $('browseFolder').addEventListener('click', async () => {
   if (folder) $('outputDir').value = folder
 })
 
+async function checkForUpdate () {
+  const result = await api.checkUpdate()
+  if (!result.ok || !result.data.available) return
+  const { version, current } = result.data
+  $('updateText').textContent = `Printshop ${version} is out (you have ${current}). Install it over this one; your licence and settings stay.`
+  $('updateBanner').hidden = false
+}
+$('updateDownload').addEventListener('click', () => api.openUpdate())
+$('updateLater').addEventListener('click', () => { $('updateBanner').hidden = true })
+
 $('saveSettings').addEventListener('click', async () => {
   hide($('settingsError'))
   try {
@@ -1341,6 +1386,7 @@ $('saveSettings').addEventListener('click', async () => {
       codexPath: $('codexPath').value,
       iccPath: $('iccPath').value,
       watermarkText: $('watermarkText').value,
+      checkUpdates: $('checkUpdates').checked,
       ...headerValues()
     }), $('settingsError'))
     $('settingsMsg').textContent = 'Saved.'
@@ -1351,4 +1397,4 @@ $('saveSettings').addEventListener('click', async () => {
   } catch { /* message already rendered */ }
 })
 
-boot()
+boot().then(checkForUpdate)
