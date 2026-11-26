@@ -156,16 +156,27 @@ async function readConfig () {
 // ---------------------------------------------------------------------------
 
 let licence = null
+// Why the saved key no longer unlocks the app (revoked, or from a newer
+// version), so the licence screen can say so instead of just asking again.
+let savedLicenceProblem = null
 
 function licencePath () {
   return path.join(app.getPath('userData'), 'licence.key')
 }
 
 async function loadLicence () {
+  licence = null
+  savedLicenceProblem = null
+  let text
   try {
-    licence = verifyLicence(await fs.readFile(licencePath(), 'utf8'))
+    text = await fs.readFile(licencePath(), 'utf8')
   } catch {
-    licence = null
+    return
+  }
+  try {
+    licence = verifyLicence(text)
+  } catch (error) {
+    savedLicenceProblem = error.message
   }
 }
 
@@ -1311,6 +1322,7 @@ handle('diagnostics:copy', async () => {
 })
 
 handle('licence:get', async () => licenceInfo())
+handle('licence:problem', async () => (licence ? null : savedLicenceProblem))
 
 handle('licence:set', async ({ key }) => {
   const next = verifyLicence(key)
@@ -1318,6 +1330,7 @@ handle('licence:set', async ({ key }) => {
   await fs.mkdir(path.dirname(licencePath()), { recursive: true })
   await fs.writeFile(licencePath(), next.key + '\n', 'utf8')
   licence = next
+  savedLicenceProblem = null
   return licenceInfo()
 })
 

@@ -32,15 +32,23 @@ const FEATURE_LABELS = {
 
 const WHATSAPP = 'https://wa.me/60137129937'
 
+// Key ids that no longer unlock the app: refunded, leaked or shared. Keys are
+// checked offline, so a revoked key keeps working on a computer until that
+// computer runs a release with its id here. Add ids from the register that
+// scripts/licence.js keeps (~/.printshop-licensing/issued.csv).
+const REVOKED_IDS = new Set([
+])
+
 function publicKeyObject (raw = PUBLIC_KEY) {
   return crypto.createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: raw }, format: 'jwk' })
 }
 
 const NOT_A_KEY = 'That is not a Printshop licence key. Copy the whole key, starting with PS1.'
 const BAD_KEY = 'This licence key is not valid. Check it was copied in full, or ask for a new one on WhatsApp.'
+const REVOKED = 'This licence key has been withdrawn. If you bought Printshop, message us on WhatsApp for a new key.'
 
 // Returns the licence, or throws a message fit to show the shop owner.
-function verifyLicence (text, publicKey = PUBLIC_KEY) {
+function verifyLicence (text, publicKey = PUBLIC_KEY, revoked = REVOKED_IDS) {
   // Keys pasted from WhatsApp or email can arrive wrapped or with spaces.
   const key = String(text || '').replace(/\s+/g, '')
   const parts = key.split('.')
@@ -63,6 +71,7 @@ function verifyLicence (text, publicKey = PUBLIC_KEY) {
   // A signed key with fields this version does not understand came from a
   // newer issuer; say so rather than guessing what it allows.
   if (data.v !== 1 || !TIERS[data.tier]) throw new Error('This licence key is for a newer Printshop. Update the app, then enter the key again.')
+  if (revoked.has(String(data.id || ''))) throw new Error(REVOKED)
 
   return {
     key,
@@ -124,6 +133,7 @@ module.exports = {
   PRO_FEATURES,
   FEATURE_LABELS,
   WHATSAPP,
+  REVOKED_IDS,
   verifyLicence,
   signLicence,
   featuresForCut,

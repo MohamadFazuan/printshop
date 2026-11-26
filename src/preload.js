@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('printshop', {
   // One-way main → renderer stream; the renderer cannot send on this channel.
   onProgress: (callback) => ipcRenderer.on('job:progress', (_event, payload) => callback(payload)),
   licence: call('licence:get'),
+  licenceProblem: call('licence:problem'),
   setLicence: call('licence:set'),
   buyLicence: call('licence:buy'),
   reveal: call('shell:reveal'),

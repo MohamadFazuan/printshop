@@ -497,7 +497,11 @@ async function boot () {
   $('customUnit').value = 'mm'
 
   showLicence(unwrap(await api.licence()))
-  if (!licence) openLicencePane(false)
+  if (!licence) {
+    openLicencePane(false)
+    const problem = unwrap(await api.licenceProblem())
+    if (problem) show($('licenceError'), problem)
+  }
   await loadSettings()
   await detectCodex()
   await refreshCodexLogin()

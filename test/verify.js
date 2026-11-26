@@ -858,6 +858,16 @@ test('a forged, tampered or foreign licence key is refused', () => {
   assert.throws(() => licence.signLicence({ email: '', tier: 'pro' }, privateKey), /email/)
 })
 
+test('a revoked key id is refused even though its signature is good', () => {
+  const { privateKey, pub } = testKeys()
+  const key = licence.signLicence({ email: 'a@b.co', tier: 'pro', id: 'dead0001' }, privateKey)
+  assert.equal(licence.verifyLicence(key, pub).id, 'dead0001')
+  assert.throws(() => licence.verifyLicence(key, pub, new Set(['dead0001'])), /withdrawn/)
+  assert.equal(licence.verifyLicence(key, pub, new Set(['other001'])).tier, 'pro')
+  // Every shipped entry has the shape scripts/licence.js issues.
+  for (const id of licence.REVOKED_IDS) assert.match(id, /^[0-9a-f]{8}$/)
+})
+
 test('Basic has no Pro features; Pro and Custom have all four', () => {
   assert.deepEqual(licence.TIERS.basic.features, [])
   for (const tier of ['pro', 'custom']) assert.deepEqual(licence.TIERS[tier].features, ['cut', 'sheets', 'upscale', 'cmyk'])
