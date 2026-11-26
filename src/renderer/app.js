@@ -464,7 +464,7 @@ async function detectCodex () {
   if (codexFound) hide(warning)
   else show(warning, 'Codex CLI not found. Printshop generates artwork through Codex on your ChatGPT plan, so it cannot generate until Codex is installed and signed in.')
 
-  if (!codexFound) $('settingsPane').hidden = false
+  if (!codexFound) openSettings('codex')
 }
 
 async function loadSettings () {
@@ -1201,7 +1201,38 @@ $('generate').addEventListener('click', generate)
 $('saveExport').addEventListener('click', saveExport)
 $('openFolder').addEventListener('click', () => api.reveal({ target: lastJob.jobDir }))
 
-$('openSettings').addEventListener('click', () => { $('settingsPane').hidden = false })
+// Settings sidebar: one section at a time. Arrow keys move between tabs.
+function showSettingsTab (name) {
+  const tabs = [...document.querySelectorAll('.settings-nav [data-tab]')]
+  for (const tab of tabs) {
+    const on = tab.dataset.tab === name
+    tab.setAttribute('aria-selected', String(on))
+    tab.tabIndex = on ? 0 : -1
+  }
+  for (const panel of document.querySelectorAll('.settings-panels [data-panel]')) panel.hidden = panel.dataset.panel !== name
+  document.querySelector('.settings-panels').scrollTop = 0
+}
+function openSettings (tab) {
+  if (tab) showSettingsTab(tab)
+  $('settingsPane').hidden = false
+}
+document.querySelector('.settings-nav').addEventListener('click', (e) => {
+  const tab = e.target.closest('[data-tab]')
+  if (tab) showSettingsTab(tab.dataset.tab)
+})
+document.querySelector('.settings-nav').addEventListener('keydown', (e) => {
+  if (!['ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return
+  const tabs = [...document.querySelectorAll('.settings-nav [data-tab]')]
+  const i = tabs.findIndex((t) => t.getAttribute('aria-selected') === 'true')
+  const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1
+  const next = tabs[(i + step + tabs.length) % tabs.length]
+  showSettingsTab(next.dataset.tab)
+  next.focus()
+  e.preventDefault()
+})
+showSettingsTab('licence')
+
+$('openSettings').addEventListener('click', () => openSettings())
 $('closeSettings').addEventListener('click', () => { $('settingsPane').hidden = true })
 
 $('browseFolder').addEventListener('click', async () => {
